@@ -1,0 +1,97 @@
+name: 🚀 Deploy — Frontend to Vercel + Backend to HF Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ─── Build & Deploy Frontend to Vercel ──────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend (Vercel)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build production
+        working-directory: frontend
+        env:
+          VITE_BACKEND_HOST: pyae1994-openhands-backend.hf.space
+          VITE_USE_TLS: 'true'
+          VITE_FRONTEND_PORT: '3000'
+          VITE_INSECURE_SKIP_VERIFY: 'false'
+        run: npm run build
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy to Vercel (Production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          cd frontend
+          vercel deploy --prod \
+            --token "$VERCEL_TOKEN" \
+            --yes \
+            2>&1 | tee /tmp/vercel_output.txt
+          
+          DEPLOY_URL=$(grep -oP 'https://[a-z0-9.-]+\.vercel\.app' /tmp/vercel_output.txt | tail -1)
+          echo "🚀 Frontend deployed: $DEPLOY_URL"
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🌐 Frontend (Vercel) | https://onehands-development.vercel.app |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🤖 Backend (HF Space) | https://pyae1994-openhands-backend.hf.space |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❤️ Health Check | https://pyae1994-openhands-backend.hf.space/health |" >> $GITHUB_STEP_SUMMARY
+
+  # ─── Health Check ─────────────────────────────────────────────────────────
+  health-check:
+    name: Verify Backend Health
+    runs-on: ubuntu-latest
+    needs: [deploy-frontend]
+    if: always()
+
+    steps:
+      - name: Check HF Backend health
+        run: |
+          echo "Checking backend health..."
+          for i in 1 2 3; do
+            STATUS=$(curl -sf --max-time 30 \
+              https://pyae1994-openhands-backend.hf.space/health \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" \
+              2>/dev/null || echo "unreachable")
+            echo "Attempt $i — Backend status: $STATUS"
+            if [ "$STATUS" = "ok" ] || [ "$STATUS" = "degraded" ]; then
+              echo "✅ Backend is LIVE"
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Final Summary
+        run: |
+          echo "## ✅ Live URLs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend**: https://onehands-development.vercel.app" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend**: https://pyae1994-openhands-backend.hf.space" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health**: https://pyae1994-openhands-backend.hf.space/health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Key Health**: https://pyae1994-openhands-backend.hf.space/health/keys" >> $GITHUB_STEP_SUMMARY
+          echo "- **Models**: https://pyae1994-openhands-backend.hf.space/api/models" >> $GITHUB_STEP_SUMMARY
