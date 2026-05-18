@@ -5,17 +5,17 @@
   "outputDirectory": "frontend/build",
   "installCommand": "cd frontend && npm install",
   "framework": null,
+  "env": {
+    "VITE_BACKEND_URL": "https://pyae1994-onehands-backend.hf.space",
+    "VITE_WS_URL": "wss://pyae1994-onehands-backend.hf.space"
+  },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "https://pyae1994-openhands-backend.hf.space/api/$1"
+      "source": "/backend/(.*)",
+      "destination": "https://pyae1994-onehands-backend.hf.space/$1"
     },
     {
-      "source": "/ws/(.*)",
-      "destination": "https://pyae1994-openhands-backend.hf.space/ws/$1"
-    },
-    {
-      "source": "/((?!api|ws|assets|_app|_next|favicon\\.ico).*)",
+      "source": "/((?!backend|assets|_app|_next|favicon\\.ico).*)",
       "destination": "/index.html"
     }
   ],
@@ -24,7 +24,7 @@
       "source": "/(.*)",
       "headers": [
         { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
         { "key": "X-XSS-Protection", "value": "1; mode=block" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
       ]

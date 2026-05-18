@@ -1,196 +1,108 @@
 """
 Onehands AI Backend — Hugging Face Space
-=========================================
-FastAPI backend for OpenHands/Onehands AI platform.
+==========================================
+Full-featured FastAPI backend for the Onehands autonomous AI platform.
 
 Stack:
-  - FastAPI + uvicorn
-  - Supabase (PostgreSQL) for persistence
-  - Redis (Upstash) for pub/sub + SSE
-  - Smart API routing (Gemini / SambaNova / GitHub LLM)
-  - E2B sandboxed code execution
-  - WebSocket + SSE for realtime events
+  • FastAPI + uvicorn
+  • Supabase (PostgreSQL via asyncpg) — conversations, messages, executions
+  • Upstash Redis — pub/sub, SSE bridge, caching
+  • Smart API Router — Gemini / SambaNova / GitHub LLM with auto-heal cooldowns
+  • E2B — secure sandboxed code execution
+  • WebSocket + SSE — realtime event streaming
+  • Agent Loop — autonomous task planning & multi-step execution
 """
 
-import os
-import json
-import uuid
-import time
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
-import httpx
-import asyncpg
-import redis.asyncio as aioredis
-
-from typing import AsyncGenerator, Optional
+import os
+import time
+import uuid
 from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
+import httpx
+from fastapi import (
+    Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
-from smart_router import router as smart_router, Provider
+import persistence as db
+from smart_router import Provider, _to_gemini_format, router as smart_router
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("onehands")
 
-# ─── Environment (all secrets via HF Space Secrets / env vars) ────────────────
-DATABASE_URL  = os.environ.get("DATABASE_URL", "")
-REDIS_URL     = os.environ.get("REDIS_URL", "")
-E2B_API_KEY   = os.environ.get("E2B_API_KEY", "")
+# ─── Config ───────────────────────────────────────────────────────────────────
+E2B_API_KEY = os.environ.get("E2B_API_KEY", "")
 
-FRONTEND_ORIGINS = [
+ALLOWED_ORIGINS: list[str] = [
     "https://onehands-development.vercel.app",
     "https://onehands.vercel.app",
     "https://pyaesonegtckglay-dotcom-onehands-development.vercel.app",
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:5173",
     "*",
 ]
 
-# ─── DB Pool ──────────────────────────────────────────────────────────────────
-db_pool: Optional[asyncpg.Pool] = None
-redis_client: Optional[aioredis.Redis] = None
-
-async def get_db() -> asyncpg.Pool:
-    if not db_pool:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db_pool
-
-async def get_redis() -> aioredis.Redis:
-    if not redis_client:
-        raise HTTPException(status_code=503, detail="Redis not available")
-    return redis_client
-
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_pool, redis_client
-    # Connect DB
-    if DATABASE_URL:
-        try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-            logger.info("✅ Supabase/PostgreSQL connected")
-            await init_db(db_pool)
-        except Exception as e:
-            logger.error(f"❌ DB connection failed: {e}")
-    else:
-        logger.warning("⚠️ DATABASE_URL not set — DB features disabled")
-
-    # Connect Redis
-    if REDIS_URL:
-        try:
-            redis_client = aioredis.from_url(
-                REDIS_URL,
-                encoding="utf-8",
-                decode_responses=True,
-                ssl_cert_reqs=None,
-            )
-            await redis_client.ping()
-            logger.info("✅ Redis (Upstash) connected")
-        except Exception as e:
-            logger.error(f"❌ Redis connection failed: {e}")
-    else:
-        logger.warning("⚠️ REDIS_URL not set — realtime features disabled")
-
+    await db.init_db()
+    await db.init_redis()
+    logger.info("🚀 Onehands backend ready")
     yield
-
-    if db_pool:
-        await db_pool.close()
-    if redis_client:
-        await redis_client.close()
-
-async def init_db(pool: asyncpg.Pool):
-    """Create tables if they don't exist."""
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                user_id TEXT NOT NULL DEFAULT 'anonymous',
-                title TEXT,
-                model TEXT DEFAULT 'gemini-2.0-flash',
-                provider TEXT DEFAULT 'gemini',
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
-                role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
-                content TEXT NOT NULL,
-                metadata JSONB DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS executions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                conversation_id UUID REFERENCES conversations(id),
-                language TEXT DEFAULT 'python',
-                code TEXT NOT NULL,
-                output TEXT,
-                error TEXT,
-                exit_code INT,
-                duration_ms INT,
-                sandbox_id TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS api_key_stats (
-                id SERIAL PRIMARY KEY,
-                provider TEXT NOT NULL,
-                key_suffix TEXT NOT NULL,
-                success_count INT DEFAULT 0,
-                error_count INT DEFAULT 0,
-                last_used TIMESTAMPTZ,
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(provider, key_suffix)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_executions_conv ON executions(conversation_id);
-        """)
-        logger.info("✅ DB schema initialized")
+    await db.close()
+    logger.info("🛑 Onehands backend shutdown")
 
 # ─── App ──────────────────────────────────────────────────────────────────────
+
 app = FastAPI(
     title="Onehands AI Backend",
-    description="OpenHands AI platform backend with smart multi-provider routing",
-    version="1.0.0",
+    description=(
+        "Autonomous AI platform backend: multi-provider LLM routing, "
+        "code execution, persistent conversations, realtime streaming."
+    ),
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─── WebSocket Manager ────────────────────────────────────────────────────────
-class ConnectionManager:
+# ─── WebSocket manager ────────────────────────────────────────────────────────
+
+class WSManager:
     def __init__(self):
-        self.active: dict[str, list[WebSocket]] = {}
+        self._rooms: dict[str, list[WebSocket]] = {}
 
     async def connect(self, ws: WebSocket, room: str):
         await ws.accept()
-        self.active.setdefault(room, []).append(ws)
-        logger.info(f"WS connected room={room} total={len(self.active[room])}")
+        self._rooms.setdefault(room, []).append(ws)
+        logger.info("WS+ room=%s total=%d", room, len(self._rooms[room]))
 
     def disconnect(self, ws: WebSocket, room: str):
-        if room in self.active:
-            self.active[room] = [c for c in self.active[room] if c != ws]
+        self._rooms[room] = [c for c in self._rooms.get(room, []) if c is not ws]
 
     async def broadcast(self, room: str, data: dict):
-        conns = self.active.get(room, [])
-        dead = []
-        for ws in conns:
+        dead: list[WebSocket] = []
+        for ws in list(self._rooms.get(room, [])):
             try:
                 await ws.send_json(data)
             except Exception:
@@ -198,233 +110,288 @@ class ConnectionManager:
         for ws in dead:
             self.disconnect(ws, room)
 
-ws_manager = ConnectionManager()
+ws_mgr = WSManager()
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
+
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
-    message: str
-    model: str = "gemini-2.0-flash"
-    provider: str = "gemini"
-    temperature: float = 0.7
-    max_tokens: int = 4096
-    system_prompt: Optional[str] = None
-    stream: bool = False
+    message:         str
+    model:           str   = "gemini-2.0-flash"
+    provider:        str   = "gemini"
+    temperature:     float = 0.7
+    max_tokens:      int   = 4096
+    system_prompt:   Optional[str] = None
+    stream:          bool  = False
+    auto_fallback:   bool  = True
+
+class StreamChatRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    message:         str
+    model:           str   = "gemini-2.0-flash"
+    provider:        str   = "gemini"
+    temperature:     float = 0.7
+    max_tokens:      int   = 4096
+    system_prompt:   Optional[str] = None
 
 class ExecuteRequest(BaseModel):
     conversation_id: Optional[str] = None
-    code: str
-    language: str = "python"
-    timeout: int = 30
+    code:            str
+    language:        str = "python"
+    timeout:         int = 30
 
 class ConversationCreate(BaseModel):
-    user_id: str = "anonymous"
-    title: Optional[str] = None
-    model: str = "gemini-2.0-flash"
-    provider: str = "gemini"
+    user_id:  str            = "anonymous"
+    title:    Optional[str]  = None
+    model:    str            = "gemini-2.0-flash"
+    provider: str            = "gemini"
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+class AgentTaskRequest(BaseModel):
+    task:            str
+    conversation_id: Optional[str] = None
+    model:           str   = "gemini-2.0-flash"
+    provider:        str   = "gemini"
+    max_steps:       int   = Field(default=8, ge=1, le=20)
+    execute_code:    bool  = True
+    user_id:         str   = "anonymous"
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _build_oai_messages(system: Optional[str], history: list, user_msg: str) -> list:
+    msgs: list[dict] = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    for row in history:
+        msgs.append({"role": row["role"], "content": row["content"]})
+    msgs.append({"role": "user", "content": user_msg})
+    return msgs
+
+async def _emit(conv_id: str, event: dict):
+    """Publish to Redis + broadcast via WS."""
+    await db.publish_event(conv_id, event)
+    await ws_mgr.broadcast(conv_id, event)
+
+async def _llm_call(
+    provider: str,
+    model: str,
+    messages: list,
+    temperature: float,
+    max_tokens: int,
+    auto_fallback: bool = True,
+) -> tuple[str, str, str]:
+    """Returns (content, used_provider, used_model)."""
+    if auto_fallback:
+        result = await smart_router.auto_chat(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            preferred_provider=provider,
+            preferred_model=model,
+        )
+        return result["content"], result["provider"], result["model"]
+
+    # strict provider
+    if provider == "gemini":
+        r = await smart_router.call_gemini(
+            model, _to_gemini_format(messages), temperature, max_tokens
+        )
+        content = r["candidates"][0]["content"]["parts"][0]["text"]
+    elif provider == "sambanova":
+        r = await smart_router.call_sambanova(model, messages, temperature, max_tokens)
+        content = r["choices"][0]["message"]["content"]
+    elif provider == "github_llm":
+        r = await smart_router.call_github_llm(model, messages, temperature, max_tokens)
+        content = r["choices"][0]["message"]["content"]
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    return content, provider, model
+
+# ─── Routes: root / health ────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
     return {
-        "service": "Onehands AI Backend",
-        "status": "running",
-        "version": "1.0.0",
-        "endpoints": ["/chat", "/execute", "/conversations", "/health", "/ws/{room}"],
+        "service":  "Onehands AI Backend",
+        "version":  "2.0.0",
+        "status":   "running",
+        "docs":     "/docs",
+        "endpoints": [
+            "/chat", "/chat/stream", "/execute",
+            "/agent/task", "/conversations",
+            "/health", "/health/keys",
+            "/ws/{room}", "/models",
+        ],
     }
 
 @app.get("/health")
 async def health():
-    db_ok = db_pool is not None
-    redis_ok = False
-    try:
-        if redis_client:
-            await redis_client.ping()
-            redis_ok = True
-    except Exception:
-        pass
+    redis_ok = await db.redis_ping()
     return {
-        "status": "ok" if (db_ok and redis_ok) else "degraded",
-        "database": "connected" if db_ok else "disconnected",
-        "redis": "connected" if redis_ok else "disconnected",
+        "status":       "ok" if (db.db_connected() and redis_ok) else "degraded",
+        "database":     "connected" if db.db_connected() else "disconnected",
+        "redis":        "connected" if redis_ok else "disconnected",
         "smart_router": smart_router.health(),
-        "timestamp": time.time(),
+        "timestamp":    time.time(),
     }
 
 @app.get("/health/keys")
 async def health_keys():
     return smart_router.health()
 
+@app.post("/health/reload-keys")
+async def reload_keys():
+    smart_router._reload_keys()
+    return {"status": "reloaded", "health": smart_router.health()}
+
 # ─── Conversations ────────────────────────────────────────────────────────────
 
-@app.post("/conversations")
-async def create_conversation(data: ConversationCreate, pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO conversations(user_id, title, model, provider)
-               VALUES($1,$2,$3,$4) RETURNING *""",
-            data.user_id, data.title or "New conversation", data.model, data.provider
-        )
-    return dict(row)
+@app.post("/conversations", status_code=201)
+async def create_conversation(data: ConversationCreate):
+    row = await db.create_conversation(
+        user_id=data.user_id,
+        title=data.title or "New conversation",
+        model=data.model,
+        provider=data.provider,
+    )
+    if not row:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return row
 
 @app.get("/conversations")
-async def list_conversations(user_id: str = "anonymous", pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM conversations WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 50",
-            user_id
-        )
-    return [dict(r) for r in rows]
+async def list_conversations(user_id: str = "anonymous"):
+    return await db.list_conversations(user_id)
 
 @app.get("/conversations/{conv_id}/messages")
-async def get_messages(conv_id: str, pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC",
-            conv_id
-        )
-    return [dict(r) for r in rows]
+async def get_messages(conv_id: str):
+    return await db.get_conversation_messages(conv_id)
 
 @app.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: str, pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM conversations WHERE id=$1", conv_id)
-    return {"deleted": True}
+async def delete_conversation(conv_id: str):
+    ok = await db.delete_conversation(conv_id)
+    return {"deleted": ok}
 
 # ─── Chat ─────────────────────────────────────────────────────────────────────
 
-def _build_messages(system_prompt: Optional[str], history: list, user_msg: str) -> list:
-    msgs = []
-    if system_prompt:
-        msgs.append({"role": "system", "content": system_prompt})
-    for row in history:
-        msgs.append({"role": row["role"], "content": row["content"]})
-    msgs.append({"role": "user", "content": user_msg})
-    return msgs
-
-async def _save_message(pool, conv_id: str, role: str, content: str):
-    if not pool:
-        return
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO messages(conversation_id, role, content) VALUES($1,$2,$3)",
-                conv_id, role, content
-            )
-            await conn.execute(
-                "UPDATE conversations SET updated_at=NOW() WHERE id=$1", conv_id
-            )
-    except Exception as e:
-        logger.error(f"Failed to save message: {e}")
-
-async def _publish_event(room: str, event: dict):
-    """Publish to Redis pub/sub for SSE/WS broadcast."""
-    try:
-        if redis_client:
-            await redis_client.publish(f"room:{room}", json.dumps(event))
-    except Exception as e:
-        logger.warning(f"Redis publish failed: {e}")
-
 @app.post("/chat")
-async def chat(req: ChatRequest, pool=Depends(get_db)):
-    # Get/create conversation
+async def chat(req: ChatRequest):
+    # Ensure conversation
     conv_id = req.conversation_id
     if not conv_id:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO conversations(user_id, title, model, provider) VALUES($1,$2,$3,$4) RETURNING id",
-                "anonymous", req.message[:50], req.model, req.provider
-            )
-            conv_id = str(row["id"])
-
-    # Fetch history
-    async with pool.acquire() as conn:
-        history = await conn.fetch(
-            "SELECT role, content FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC LIMIT 20",
-            conv_id
+        row = await db.create_conversation(
+            title=req.message[:60],
+            model=req.model,
+            provider=req.provider,
         )
+        conv_id = str(row["id"]) if row else str(uuid.uuid4())
 
-    messages = _build_messages(req.system_prompt, history, req.message)
+    # History
+    history = await db.get_conversation_messages(conv_id)
+    messages = _build_oai_messages(req.system_prompt, history, req.message)
 
-    # Save user message
-    await _save_message(pool, conv_id, "user", req.message)
+    # Save user msg
+    await db.save_message(conv_id, "user", req.message)
 
     try:
-        if req.provider == "gemini":
-            # Convert to Gemini format
-            gemini_msgs = []
-            for m in messages:
-                role = "user" if m["role"] in ("user", "system") else "model"
-                gemini_msgs.append({"role": role, "parts": [{"text": m["content"]}]})
-            result = await smart_router.call_gemini(
-                model=req.model,
-                messages=gemini_msgs,
-                temperature=req.temperature,
-                max_tokens=req.max_tokens,
-            )
-            reply = result["candidates"][0]["content"]["parts"][0]["text"]
-
-        elif req.provider == "sambanova":
-            result = await smart_router.call_sambanova(
-                model=req.model,
-                messages=messages,
-                temperature=req.temperature,
-                max_tokens=req.max_tokens,
-            )
-            reply = result["choices"][0]["message"]["content"]
-
-        elif req.provider == "github_llm":
-            result = await smart_router.call_github_llm(
-                model=req.model,
-                messages=messages,
-                temperature=req.temperature,
-                max_tokens=req.max_tokens,
-            )
-            reply = result["choices"][0]["message"]["content"]
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown provider: {req.provider}")
-
+        content, used_provider, used_model = await _llm_call(
+            provider=req.provider,
+            model=req.model,
+            messages=messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+            auto_fallback=req.auto_fallback,
+        )
     except Exception as e:
-        logger.error(f"Chat error: {e}")
+        logger.error("chat error: %s", e)
         raise HTTPException(status_code=502, detail=str(e))
 
-    # Save assistant reply
-    await _save_message(pool, conv_id, "assistant", reply)
-
-    # Publish to realtime
-    await _publish_event(conv_id, {
-        "type": "message",
-        "role": "assistant",
-        "content": reply,
-        "conv_id": conv_id,
-    })
-    await ws_manager.broadcast(conv_id, {
-        "type": "message",
-        "role": "assistant",
-        "content": reply,
-    })
+    # Save & emit
+    await db.save_message(conv_id, "assistant", content, used_provider, used_model)
+    await _emit(conv_id, {"type": "message", "role": "assistant", "content": content})
 
     return {
-        "conv_id": conv_id,
-        "role": "assistant",
-        "content": reply,
-        "model": req.model,
-        "provider": req.provider,
+        "conv_id":  conv_id,
+        "role":     "assistant",
+        "content":  content,
+        "model":    used_model,
+        "provider": used_provider,
     }
 
-# ─── SSE Stream ───────────────────────────────────────────────────────────────
+# ─── Streaming chat ───────────────────────────────────────────────────────────
+
+@app.post("/chat/stream")
+async def chat_stream(req: StreamChatRequest):
+    """SSE streaming chat endpoint."""
+    conv_id = req.conversation_id
+    if not conv_id:
+        row = await db.create_conversation(
+            title=req.message[:60], model=req.model, provider=req.provider
+        )
+        conv_id = str(row["id"]) if row else str(uuid.uuid4())
+
+    history  = await db.get_conversation_messages(conv_id)
+    messages = _build_oai_messages(req.system_prompt, history, req.message)
+    await db.save_message(conv_id, "user", req.message)
+
+    async def event_gen() -> AsyncGenerator[str, None]:
+        full_text = ""
+        try:
+            if req.provider == "gemini":
+                gen = smart_router.stream_gemini(
+                    req.model, _to_gemini_format(messages),
+                    req.temperature, req.max_tokens,
+                )
+            elif req.provider == "sambanova":
+                gen = smart_router.stream_sambanova(
+                    req.model, messages, req.temperature, req.max_tokens
+                )
+            elif req.provider == "github_llm":
+                gen = smart_router.stream_github_llm(
+                    req.model, messages, req.temperature, req.max_tokens
+                )
+            else:
+                yield f"data: {json.dumps({'error': f'Unknown provider: {req.provider}'})}\n\n"
+                return
+
+            async for chunk in gen:
+                full_text += chunk
+                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk, 'conv_id': conv_id})}\n\n"
+
+        except Exception as e:
+            logger.error("stream error: %s", e)
+            # fallback to non-streaming
+            try:
+                content, used_provider, used_model = await _llm_call(
+                    provider=req.provider, model=req.model,
+                    messages=messages, temperature=req.temperature,
+                    max_tokens=req.max_tokens, auto_fallback=True,
+                )
+                full_text = content
+                yield f"data: {json.dumps({'type': 'chunk', 'content': content, 'conv_id': conv_id})}\n\n"
+            except Exception as e2:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e2)})}\n\n"
+                return
+
+        await db.save_message(conv_id, "assistant", full_text, req.provider, req.model)
+        await _emit(conv_id, {"type": "done", "conv_id": conv_id, "content": full_text})
+        yield f"data: {json.dumps({'type': 'done', 'conv_id': conv_id})}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+# ─── SSE subscribe ────────────────────────────────────────────────────────────
 
 @app.get("/chat/stream/{conv_id}")
-async def sse_stream(conv_id: str, request: Request):
-    """SSE endpoint — subscribe to Redis channel for a conversation."""
-    async def event_generator() -> AsyncGenerator[str, None]:
-        if not redis_client:
-            yield "data: {\"error\":\"Redis not available\"}\n\n"
+async def sse_subscribe(conv_id: str, request: Request):
+    """Subscribe to events for a conversation room via SSE."""
+    async def gen() -> AsyncGenerator[str, None]:
+        redis = db.get_redis()
+        if not redis:
+            yield 'data: {"error":"Redis not available"}\n\n'
             return
-
-        pubsub = redis_client.pubsub()
+        pubsub = redis.pubsub()
         await pubsub.subscribe(f"room:{conv_id}")
         try:
             while True:
@@ -435,125 +402,224 @@ async def sse_stream(conv_id: str, request: Request):
                     yield f"data: {msg['data']}\n\n"
                 else:
                     yield ": keepalive\n\n"
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
         finally:
             await pubsub.unsubscribe(f"room:{conv_id}")
-            await pubsub.close()
+            await pubsub.aclose()
 
     return StreamingResponse(
-        event_generator(),
+        gen(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{room}")
-async def websocket_endpoint(ws: WebSocket, room: str):
-    await ws_manager.connect(ws, room)
+async def websocket_ep(ws: WebSocket, room: str):
+    await ws_mgr.connect(ws, room)
     try:
         while True:
             data = await ws.receive_text()
-            msg = json.loads(data)
-            msg["echo"] = True
-            await ws_manager.broadcast(room, msg)
+            try:
+                msg = json.loads(data)
+            except Exception:
+                msg = {"raw": data}
+            await ws_mgr.broadcast(room, msg)
     except WebSocketDisconnect:
-        ws_manager.disconnect(ws, room)
+        ws_mgr.disconnect(ws, room)
     except Exception as e:
-        logger.error(f"WS error: {e}")
-        ws_manager.disconnect(ws, room)
+        logger.error("WS error room=%s: %s", room, e)
+        ws_mgr.disconnect(ws, room)
 
 # ─── Code Execution (E2B) ─────────────────────────────────────────────────────
 
-async def run_e2b_sandbox(code: str, language: str, timeout: int) -> dict:
-    """Execute code in E2B sandbox."""
+async def _e2b_run(code: str, language: str, timeout: int) -> dict:
     if not E2B_API_KEY:
         return {"output": "", "error": "E2B_API_KEY not configured", "exit_code": 1, "duration_ms": 0}
     try:
         import e2b_code_interpreter as e2b
-        sandbox = await asyncio.to_thread(
-            e2b.Sandbox,
-            api_key=E2B_API_KEY,
-            timeout=timeout,
-        )
         start = time.time()
+        sandbox = await asyncio.to_thread(e2b.Sandbox, api_key=E2B_API_KEY, timeout=timeout)
         execution = await asyncio.to_thread(sandbox.run_code, code)
         duration = int((time.time() - start) * 1000)
         await asyncio.to_thread(sandbox.kill)
-
-        stdout = "\n".join(execution.logs.stdout) if execution.logs.stdout else ""
-        stderr = "\n".join(execution.logs.stderr) if execution.logs.stderr else ""
-
+        stdout = "\n".join(execution.logs.stdout or [])
+        stderr = "\n".join(execution.logs.stderr or [])
         return {
-            "output": stdout,
-            "error": stderr,
-            "exit_code": 0 if not stderr else 1,
+            "output":      stdout,
+            "error":       stderr,
+            "exit_code":   1 if stderr else 0,
             "duration_ms": duration,
         }
     except Exception as e:
-        return {
-            "output": "",
-            "error": str(e),
-            "exit_code": 1,
-            "duration_ms": 0,
-        }
+        return {"output": "", "error": str(e), "exit_code": 1, "duration_ms": 0}
 
 @app.post("/execute")
-async def execute_code(req: ExecuteRequest, pool=Depends(get_db)):
-    result = await run_e2b_sandbox(req.code, req.language, req.timeout)
-    if req.conversation_id and pool:
-        try:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """INSERT INTO executions(conversation_id, language, code, output, error, exit_code, duration_ms)
-                       VALUES($1,$2,$3,$4,$5,$6,$7)""",
-                    req.conversation_id, req.language, req.code,
-                    result["output"], result["error"], result["exit_code"], result["duration_ms"]
-                )
-        except Exception as e:
-            logger.warning(f"Failed to save execution: {e}")
-
+async def execute_code(req: ExecuteRequest):
+    result = await _e2b_run(req.code, req.language, req.timeout)
     if req.conversation_id:
-        await _publish_event(req.conversation_id, {"type": "execution", **result})
-        await ws_manager.broadcast(req.conversation_id, {"type": "execution", **result})
-
+        await db.save_execution(
+            req.conversation_id, req.language, req.code,
+            result["output"], result["error"],
+            result["exit_code"], result["duration_ms"],
+        )
+        await _emit(req.conversation_id, {"type": "execution", **result})
     return result
 
-# ─── Models List ──────────────────────────────────────────────────────────────
+# ─── Agent Loop ───────────────────────────────────────────────────────────────
+
+AGENT_SYSTEM = """You are Onehands — an autonomous AI developer agent.
+
+Given a task, you:
+1. PLAN: Break it into numbered steps
+2. EXECUTE: For each step, either write reasoning OR generate code
+3. CODE: When writing code, wrap it in ```python ... ``` blocks
+4. OBSERVE: After code runs, use the output to guide next step
+5. FINISH: When done, summarize results
+
+Rules:
+- Be concise, action-oriented
+- One code block per step maximum
+- If a step requires browsing or file I/O, describe what you'd do
+- Always end with a FINAL ANSWER section
+"""
+
+def _extract_code(text: str) -> Optional[str]:
+    """Extract first python code block from markdown text."""
+    import re
+    pattern = r"```(?:python)?\n(.*?)```"
+    m = re.search(pattern, text, re.DOTALL)
+    return m.group(1).strip() if m else None
+
+@app.post("/agent/task")
+async def agent_task(req: AgentTaskRequest):
+    """
+    Autonomous agent loop:
+    1. Create/use conversation
+    2. LLM plans & executes step-by-step
+    3. Code blocks run in E2B sandbox
+    4. Results fed back to LLM
+    5. Returns full trace
+    """
+    conv_id = req.conversation_id
+    if not conv_id:
+        row = await db.create_conversation(
+            user_id=req.user_id,
+            title=f"Agent: {req.task[:50]}",
+            model=req.model,
+            provider=req.provider,
+        )
+        conv_id = str(row["id"]) if row else str(uuid.uuid4())
+
+    await db.save_message(conv_id, "user", req.task)
+    await _emit(conv_id, {"type": "agent_start", "task": req.task, "conv_id": conv_id})
+
+    messages: list[dict] = [
+        {"role": "system", "content": AGENT_SYSTEM},
+        {"role": "user",   "content": f"TASK: {req.task}"},
+    ]
+
+    trace: list[dict] = []
+    step = 0
+
+    while step < req.max_steps:
+        step += 1
+        logger.info("Agent step %d/%d  conv=%s", step, req.max_steps, conv_id)
+
+        # LLM call
+        try:
+            content, used_provider, used_model = await _llm_call(
+                provider=req.provider,
+                model=req.model,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=2048,
+                auto_fallback=True,
+            )
+        except Exception as e:
+            error_msg = f"LLM failed at step {step}: {e}"
+            trace.append({"step": step, "type": "error", "content": error_msg})
+            break
+
+        messages.append({"role": "assistant", "content": content})
+        await db.save_message(conv_id, "assistant", content, used_provider, used_model)
+        await _emit(conv_id, {
+            "type":     "agent_step",
+            "step":     step,
+            "content":  content,
+            "provider": used_provider,
+            "model":    used_model,
+        })
+        trace.append({"step": step, "type": "thought", "content": content})
+
+        # Execute code if present
+        if req.execute_code:
+            code = _extract_code(content)
+            if code:
+                exec_result = await _e2b_run(code, "python", 30)
+                await db.save_execution(
+                    conv_id, "python", code,
+                    exec_result["output"], exec_result["error"],
+                    exec_result["exit_code"], exec_result["duration_ms"],
+                )
+                await _emit(conv_id, {
+                    "type": "agent_execution",
+                    "step": step,
+                    **exec_result,
+                })
+                trace.append({"step": step, "type": "execution", **exec_result})
+
+                # Feed result back
+                obs = f"[Code execution result]\noutput: {exec_result['output']}\nerror: {exec_result['error']}\nexit_code: {exec_result['exit_code']}"
+                messages.append({"role": "user", "content": obs})
+
+        # Check if done
+        if any(kw in content.lower() for kw in ("final answer", "task complete", "done.", "finished.")):
+            break
+
+    await _emit(conv_id, {"type": "agent_done", "steps": step, "conv_id": conv_id})
+
+    return {
+        "conv_id": conv_id,
+        "task":    req.task,
+        "steps":   step,
+        "trace":   trace,
+    }
+
+# ─── Models ───────────────────────────────────────────────────────────────────
 
 @app.get("/models")
 async def list_models():
     return {
         "gemini": [
-            {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "context": 1048576},
+            {"id": "gemini-2.0-flash",              "name": "Gemini 2.0 Flash",          "context": 1048576},
             {"id": "gemini-2.0-flash-thinking-exp", "name": "Gemini 2.0 Flash Thinking", "context": 32768},
-            {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro", "context": 2097152},
-            {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash", "context": 1048576},
+            {"id": "gemini-1.5-pro",                "name": "Gemini 1.5 Pro",            "context": 2097152},
+            {"id": "gemini-1.5-flash",              "name": "Gemini 1.5 Flash",          "context": 1048576},
         ],
         "sambanova": [
-            {"id": "Meta-Llama-3.3-70B-Instruct", "name": "Llama 3.3 70B", "context": 131072},
-            {"id": "Meta-Llama-3.1-405B-Instruct", "name": "Llama 3.1 405B", "context": 16384},
-            {"id": "DeepSeek-R1", "name": "DeepSeek R1", "context": 32768},
-            {"id": "Qwen2.5-72B-Instruct", "name": "Qwen 2.5 72B", "context": 32768},
+            {"id": "Meta-Llama-3.3-70B-Instruct",  "name": "Llama 3.3 70B",    "context": 131072},
+            {"id": "Meta-Llama-3.1-405B-Instruct", "name": "Llama 3.1 405B",   "context": 16384},
+            {"id": "DeepSeek-R1",                  "name": "DeepSeek R1",       "context": 32768},
+            {"id": "Qwen2.5-72B-Instruct",         "name": "Qwen 2.5 72B",     "context": 32768},
         ],
         "github_llm": [
-            {"id": "gpt-4o", "name": "GPT-4o", "context": 128000},
-            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "context": 128000},
-            {"id": "Meta-Llama-3.1-70B-Instruct", "name": "Llama 3.1 70B (GitHub)", "context": 131072},
-            {"id": "Mistral-large-2407", "name": "Mistral Large", "context": 131072},
+            {"id": "gpt-4o",                          "name": "GPT-4o",                   "context": 128000},
+            {"id": "gpt-4o-mini",                     "name": "GPT-4o Mini",              "context": 128000},
+            {"id": "Meta-Llama-3.1-70B-Instruct",     "name": "Llama 3.1 70B (GitHub)",   "context": 131072},
+            {"id": "Mistral-large-2407",              "name": "Mistral Large",             "context": 131072},
         ],
     }
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+# ─── Entry ────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=7860,
+        port=int(os.environ.get("PORT", 7860)),
         log_level="info",
         workers=1,
     )
