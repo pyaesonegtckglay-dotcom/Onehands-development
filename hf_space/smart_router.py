@@ -38,9 +38,16 @@ MAX_RETRIES       = 3
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _load_keys(env_var: str) -> list[str]:
-    raw = os.environ.get(env_var, "").strip()
-    return [k.strip() for k in raw.split(",") if k.strip()] if raw else []
+def _load_keys(*env_vars: str) -> list[str]:
+    """Load API keys from one or more env var names (first non-empty wins).
+    Supports comma-separated multiple keys per env var.
+    Accepts both singular (GEMINI_KEY) and plural (GEMINI_KEYS) variants.
+    """
+    for env_var in env_vars:
+        raw = os.environ.get(env_var, "").strip()
+        if raw:
+            return [k.strip() for k in raw.split(",") if k.strip()]
+    return []
 
 
 # ─── Provider enum ────────────────────────────────────────────────────────────
@@ -115,9 +122,9 @@ class SmartRouter:
 
     def _reload_keys(self):
         self._pools = {
-            Provider.GEMINI:     [KeyState(k, Provider.GEMINI)     for k in _load_keys("GEMINI_KEY")],
-            Provider.SAMBANOVA:  [KeyState(k, Provider.SAMBANOVA)  for k in _load_keys("SAMBANOVA_KEY")],
-            Provider.GITHUB_LLM: [KeyState(k, Provider.GITHUB_LLM) for k in _load_keys("GITHUB_KEY")],
+            Provider.GEMINI:     [KeyState(k, Provider.GEMINI)     for k in _load_keys("GEMINI_KEYS", "GEMINI_KEY")],
+            Provider.SAMBANOVA:  [KeyState(k, Provider.SAMBANOVA)  for k in _load_keys("SAMBANOVA_KEYS", "SAMBANOVA_KEY")],
+            Provider.GITHUB_LLM: [KeyState(k, Provider.GITHUB_LLM) for k in _load_keys("GITHUB_KEYS", "GITHUB_KEY")],
         }
         self._indices = {p: 0 for p in Provider}
         for p, pool in self._pools.items():

@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,43 +28,45 @@ _redis = None            # redis.asyncio.Redis
 
 def _fix_db_url(url: str) -> str:
     """
-    Fix DATABASE_URL that may have unencoded special chars in password (e.g. @).
+    Fix DATABASE_URL that may have unencoded special chars in password (e.g. @ in psaespw@1994).
+    Uses last-@ strategy: everything before the final @ is userinfo (user:pass),
+    everything after is host:port/dbname.
     Supports both postgresql:// and postgres:// schemes.
     """
     if not url:
         return url
-    # First try to unquote any existing percent-encoding
-    url = unquote(url)
-    # Parse the URL — if password contains @ the naive parse will fail
-    # So we do it manually
-    try:
-        # Try standard parse first
-        parsed = urlparse(url)
-        if parsed.username and parsed.password:
-            # Re-encode password with proper percent-encoding
-            encoded_pass = quote_plus(parsed.password)
-            encoded_user = quote_plus(parsed.username)
-            scheme = parsed.scheme
-            if scheme == "postgres":
-                scheme = "postgresql"
-            fixed = f"{scheme}://{encoded_user}:{encoded_pass}@{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
-            if parsed.query:
-                fixed += f"?{parsed.query}"
-            return fixed
-    except Exception:
-        pass
 
-    # Fallback: manual regex-based extraction
-    import re
-    m = re.match(r"postgres(?:ql)?://([^:]+):(.+)@([^:/]+):?(\d+)?/(.+)", url)
-    if m:
-        user, pwd, host, port, db = m.groups()
-        encoded_pass = quote_plus(unquote(pwd))
-        encoded_user = quote_plus(unquote(user))
-        port = port or "5432"
-        return f"postgresql://{encoded_user}:{encoded_pass}@{host}:{port}/{db}"
+    # Normalise scheme
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
 
-    return url
+    # Strip scheme prefix
+    prefix = "postgresql://"
+    if not url.startswith(prefix):
+        return url
+    rest = url[len(prefix):]  # user:pass@host:port/db
+
+    # Split at the LAST @ — handles @ inside passwords
+    last_at = rest.rfind("@")
+    if last_at == -1:
+        return url  # no userinfo — return as-is
+
+    userinfo = rest[:last_at]   # "user:pass" (pass may already be encoded)
+    hostinfo = rest[last_at+1:] # "host:port/db"
+
+    colon = userinfo.find(":")
+    if colon == -1:
+        return url  # can't parse
+    raw_user = userinfo[:colon]
+    raw_pass = userinfo[colon+1:]
+
+    # Unquote first to avoid double-encoding, then re-encode cleanly
+    clean_pass = unquote(raw_pass)
+    clean_user = unquote(raw_user)
+    encoded_pass = quote_plus(clean_pass)
+    encoded_user = quote_plus(clean_user)
+
+    return f"postgresql://{encoded_user}:{encoded_pass}@{hostinfo}"
 
 
 async def init_db() -> bool:
@@ -74,42 +77,57 @@ async def init_db() -> bool:
         logger.warning("DATABASE_URL not set — DB persistence disabled")
         return False
     db_url = _fix_db_url(db_url)
+    logger.info("DB connecting to: ***@%s", db_url.split("@")[-1] if "@" in db_url else "???")
     try:
         import asyncpg
-        _db_pool = await asyncpg.create_pool(
-            db_url,
-            min_size=1,
-            max_size=8,
-            command_timeout=30,
-            ssl="require",
+        _db_pool = await asyncio.wait_for(
+            asyncpg.create_pool(
+                db_url,
+                min_size=1,
+                max_size=8,
+                command_timeout=30,
+                ssl="require",
+            ),
+            timeout=20,
         )
         await _create_schema()
         logger.info("✅ Supabase/PostgreSQL connected")
         return True
+    except asyncio.TimeoutError:
+        logger.error("❌ DB connection TIMEOUT (20s)")
+        _db_pool = None
+        return False
     except Exception as e:
-        logger.error("❌ DB connection failed: %s", e)
+        logger.error("❌ DB connection failed: %s — %s", type(e).__name__, e)
         _db_pool = None
         return False
 
 
 async def init_redis() -> bool:
-    """Connect to Upstash Redis. Returns True on success."""
+    """Connect to Upstash Redis (TLS). Returns True on success."""
     global _redis
     redis_url = os.environ.get("REDIS_URL", "")
     if not redis_url:
         logger.warning("REDIS_URL not set — Redis realtime disabled")
         return False
+    # Upstash requires TLS — upgrade redis:// → rediss:// automatically
+    if redis_url.startswith("redis://"):
+        redis_url = "rediss://" + redis_url[len("redis://"):]
     try:
         import redis.asyncio as aioredis
+        # ssl_cert_reqs param removed — not supported in newer redis-py
         _redis = aioredis.from_url(
             redis_url,
             encoding="utf-8",
             decode_responses=True,
-            ssl_cert_reqs=None,
         )
-        await _redis.ping()
-        logger.info("✅ Redis (Upstash) connected")
+        await asyncio.wait_for(_redis.ping(), timeout=10)
+        logger.info("✅ Redis (Upstash TLS) connected")
         return True
+    except asyncio.TimeoutError:
+        logger.error("❌ Redis connection TIMEOUT")
+        _redis = None
+        return False
     except Exception as e:
         logger.error("❌ Redis connection failed: %s", e)
         _redis = None

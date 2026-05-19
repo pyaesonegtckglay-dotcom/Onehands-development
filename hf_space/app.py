@@ -1172,6 +1172,66 @@ async def list_models():
 
 # ─── Entry ────────────────────────────────────────────────────────────────────
 
+@app.post("/debug/reconnect")
+async def debug_reconnect():
+    """Force reconnect to DB and Redis — useful after secrets are updated."""
+    import os, traceback as tb
+    from urllib.parse import quote_plus, unquote
+    db_error = None
+    redis_error = None
+
+    # Try DB connect with detailed error capture
+    db_result = False
+    try:
+        db_result = await db.init_db()
+    except Exception as e:
+        db_error = str(e)
+
+    # Try Redis connect
+    redis_result = False
+    try:
+        redis_result = await db.init_redis()
+    except Exception as e:
+        redis_error = str(e)
+
+    # Show the decoded DB URL (masked) for debugging
+    raw_url = os.environ.get("DATABASE_URL", "")
+    db_url_info = "not_set"
+    if raw_url:
+        try:
+            rest = raw_url.split("://", 1)[1]
+            last_at = rest.rfind("@")
+            host_part = rest[last_at+1:] if last_at >= 0 else "parse_error"
+            db_url_info = f"***@{host_part}"
+        except Exception:
+            db_url_info = "parse_error"
+
+    return {
+        "db_reconnect": "success" if db_result else "failed",
+        "redis_reconnect": "success" if redis_result else "failed",
+        "db_connected": db.db_connected(),
+        "redis_connected": db.redis_connected(),
+        "db_error": db_error,
+        "redis_error": redis_error,
+        "db_url_debug": db_url_info,
+    }
+
+
+@app.get("/debug/env")
+async def debug_env():
+    """Show sanitized env vars for debugging."""
+    import os
+    def mask(v): return f"***{v[-4:]}" if v and len(v) > 4 else ("set" if v else "not_set")
+    return {
+        "DATABASE_URL": mask(os.environ.get("DATABASE_URL", "")),
+        "REDIS_URL": mask(os.environ.get("REDIS_URL", "")),
+        "E2B_API_KEY": mask(os.environ.get("E2B_API_KEY", "")),
+        "GEMINI_KEYS": f"{len(os.environ.get('GEMINI_KEYS','').split(','))} keys" if os.environ.get("GEMINI_KEYS") else "not_set",
+        "SAMBANOVA_KEYS": f"{len(os.environ.get('SAMBANOVA_KEYS','').split(','))} keys" if os.environ.get("SAMBANOVA_KEYS") else "not_set",
+        "GITHUB_KEYS": f"{len(os.environ.get('GITHUB_KEYS','').split(','))} keys" if os.environ.get("GITHUB_KEYS") else "not_set",
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
