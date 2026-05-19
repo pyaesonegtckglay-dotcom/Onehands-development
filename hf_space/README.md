@@ -9,48 +9,55 @@ license: mit
 app_port: 7860
 ---
 
-# Onehands AI Backend v2.0
+# Onehands AI Backend v3.0 — Phase 1-6 Complete
 
-**Autonomous AI platform backend** for the Onehands development system.
+**Autonomous AI Developer platform backend** — fully operational with all 6 phases.
 
-## Features
+## ✅ Phase Status
 
-- 🔑 **Smart API Routing** — Gemini / SambaNova / GitHub LLM with round-robin, cooldown & auto-heal
-- 🔄 **Auto-Fallback** — if one provider fails, automatically tries the next
-- 🤖 **Agent Loop** — autonomous multi-step task planning & execution
-- 🧪 **E2B Code Execution** — secure sandboxed Python execution
-- 🗄️ **Supabase/PostgreSQL** — persistent conversations, messages, executions
-- ⚡ **Upstash Redis** — pub/sub realtime events
-- 🌐 **WebSocket + SSE** — realtime streaming
-- 📡 **Streaming LLM** — SSE token-by-token streaming for all providers
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Smart LLM Routing (Gemini/SambaNova/GitHub) | ✅ Active |
+| 2 | Persistent Conversations (Supabase PostgreSQL) | ✅ Active |
+| 3 | Realtime Streaming (SSE + WebSocket + Redis) | ✅ Active |
+| 4 | Code Execution (E2B sandbox + local fallback) | ✅ Active |
+| 5 | Autonomous Agent Loop (multi-step planning) | ✅ Active |
+| 6 | Memory System + Tool Calling + Advanced Planning | ✅ Active |
 
-## Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Service info |
-| GET | `/health` | Health check |
-| GET | `/health/keys` | API key pool status |
-| POST | `/health/reload-keys` | Hot-reload API keys |
-| POST | `/chat` | Chat (non-streaming) |
-| POST | `/chat/stream` | Chat (streaming SSE) |
-| GET | `/chat/stream/{conv_id}` | Subscribe to conversation events |
-| WS | `/ws/{room}` | WebSocket room |
-| POST | `/execute` | Run code in E2B sandbox |
-| POST | `/agent/task` | Autonomous agent task |
-| GET | `/conversations` | List conversations |
-| POST | `/conversations` | Create conversation |
-| GET | `/conversations/{id}/messages` | Get messages |
-| DELETE | `/conversations/{id}` | Delete conversation |
-| GET | `/models` | Available models |
-
-## Required Environment Variables (HF Space Secrets)
+## 🔑 Required HF Space Secrets
 
 ```
 GEMINI_KEY=key1,key2,...
 SAMBANOVA_KEY=key1,key2,...
 GITHUB_KEY=key1,key2,...
-DATABASE_URL=postgresql://...
+DATABASE_URL=postgresql://user:pass@host:5432/db
 REDIS_URL=redis://...
 E2B_API_KEY=...
 ```
+
+## 📡 API Endpoints
+
+| Method | Path | Phase | Description |
+|--------|------|-------|-------------|
+| GET | `/` | - | Service info |
+| GET | `/health` | 1-6 | Full health check |
+| GET | `/health/keys` | 1 | API key pool status |
+| POST | `/health/reload-keys` | 1 | Hot-reload API keys |
+| POST | `/chat` | 1+2 | Chat (non-streaming) |
+| POST | `/chat/stream` | 1+3 | Chat (SSE streaming) |
+| GET | `/chat/stream/{id}` | 3 | Subscribe to events |
+| WS | `/ws/{room}` | 3 | WebSocket room |
+| POST | `/execute` | 4 | Run code in E2B sandbox |
+| POST | `/agent/task` | 5+6 | Autonomous agent task |
+| POST | `/agent/plan` | 5+6 | Create execution plan |
+| GET | `/tools` | 6 | List available tools |
+| POST | `/tools/execute` | 6 | Execute a tool |
+| POST | `/memory` | 6 | Save memory |
+| GET | `/memory` | 6 | Retrieve memories |
+| GET | `/conversations` | 2 | List conversations |
+| POST | `/conversations` | 2 | Create conversation |
+| GET | `/conversations/{id}/messages` | 2 | Get messages |
+| GET | `/conversations/{id}/executions` | 4 | Get executions |
+| GET | `/conversations/{id}/tool-calls` | 6 | Get tool calls |
+| DELETE | `/conversations/{id}` | 2 | Delete conversation |
+| GET | `/models` | 1 | Available models list |

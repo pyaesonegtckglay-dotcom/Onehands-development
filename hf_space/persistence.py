@@ -2,20 +2,20 @@
 Persistence layer: Supabase (PostgreSQL) + Redis (Upstash).
 
 Provides:
-  - DB pool (asyncpg) for conversations, messages, executions
+  - DB pool (asyncpg) for conversations, messages, executions, memory, tool_calls
   - Redis pub/sub for realtime SSE/WebSocket bridging
   - Auto-init schema on startup
+  - Graceful degradation when DB/Redis unavailable
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
-from urllib.parse import unquote
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, unquote, urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,47 @@ _db_pool = None          # asyncpg.Pool
 _redis = None            # redis.asyncio.Redis
 
 
+def _fix_db_url(url: str) -> str:
+    """
+    Fix DATABASE_URL that may have unencoded special chars in password (e.g. @).
+    Supports both postgresql:// and postgres:// schemes.
+    """
+    if not url:
+        return url
+    # First try to unquote any existing percent-encoding
+    url = unquote(url)
+    # Parse the URL — if password contains @ the naive parse will fail
+    # So we do it manually
+    try:
+        # Try standard parse first
+        parsed = urlparse(url)
+        if parsed.username and parsed.password:
+            # Re-encode password with proper percent-encoding
+            encoded_pass = quote_plus(parsed.password)
+            encoded_user = quote_plus(parsed.username)
+            scheme = parsed.scheme
+            if scheme == "postgres":
+                scheme = "postgresql"
+            fixed = f"{scheme}://{encoded_user}:{encoded_pass}@{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+            if parsed.query:
+                fixed += f"?{parsed.query}"
+            return fixed
+    except Exception:
+        pass
+
+    # Fallback: manual regex-based extraction
+    import re
+    m = re.match(r"postgres(?:ql)?://([^:]+):(.+)@([^:/]+):?(\d+)?/(.+)", url)
+    if m:
+        user, pwd, host, port, db = m.groups()
+        encoded_pass = quote_plus(unquote(pwd))
+        encoded_user = quote_plus(unquote(user))
+        port = port or "5432"
+        return f"postgresql://{encoded_user}:{encoded_pass}@{host}:{port}/{db}"
+
+    return url
+
+
 async def init_db() -> bool:
     """Connect to Supabase PostgreSQL. Returns True on success."""
     global _db_pool
@@ -32,8 +73,7 @@ async def init_db() -> bool:
     if not db_url:
         logger.warning("DATABASE_URL not set — DB persistence disabled")
         return False
-    # asyncpg expects real @ character, not %40
-    db_url = unquote(db_url)
+    db_url = _fix_db_url(db_url)
     try:
         import asyncpg
         _db_pool = await asyncpg.create_pool(
@@ -48,6 +88,7 @@ async def init_db() -> bool:
         return True
     except Exception as e:
         logger.error("❌ DB connection failed: %s", e)
+        _db_pool = None
         return False
 
 
@@ -71,6 +112,7 @@ async def init_redis() -> bool:
         return True
     except Exception as e:
         logger.error("❌ Redis connection failed: %s", e)
+        _redis = None
         return False
 
 
@@ -79,7 +121,7 @@ async def close():
     if _db_pool:
         await _db_pool.close()
     if _redis:
-        await _redis.close()
+        await _redis.aclose()
 
 
 # ─── Schema init ──────────────────────────────────────────────────────────────
@@ -94,6 +136,8 @@ async def _create_schema():
                 model TEXT DEFAULT 'gemini-2.0-flash',
                 provider TEXT DEFAULT 'gemini',
                 task_type TEXT DEFAULT 'general',
+                status TEXT DEFAULT 'active',
+                metadata JSONB DEFAULT '{}',
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
@@ -105,7 +149,10 @@ async def _create_schema():
                 content TEXT NOT NULL,
                 provider TEXT,
                 model TEXT,
+                tool_calls JSONB DEFAULT NULL,
+                tool_call_id TEXT DEFAULT NULL,
                 metadata JSONB DEFAULT '{}',
+                tokens_used INT DEFAULT 0,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
 
@@ -122,9 +169,49 @@ async def _create_schema():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL DEFAULT 'anonymous',
+                conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+                memory_type TEXT DEFAULT 'fact',
+                key TEXT,
+                content TEXT NOT NULL,
+                importance FLOAT DEFAULT 0.5,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+                message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+                tool_name TEXT NOT NULL,
+                tool_input JSONB DEFAULT '{}',
+                tool_output TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                duration_ms INT DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_plans (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+                task TEXT NOT NULL,
+                steps JSONB DEFAULT '[]',
+                current_step INT DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                result TEXT DEFAULT '',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_executions_conv ON executions(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_user ON agent_memory(user_id, conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_conv ON tool_calls(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_plans_conv ON agent_plans(conversation_id);
         """)
     logger.info("✅ DB schema ready")
 
@@ -136,15 +223,31 @@ async def create_conversation(
     title: str = "New conversation",
     model: str = "gemini-2.0-flash",
     provider: str = "gemini",
+    task_type: str = "general",
+    metadata: dict = None,
 ) -> Optional[dict]:
     if not _db_pool:
-        return None
+        # Return a fake conversation for DB-less mode
+        import uuid
+        return {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "title": title,
+            "model": model,
+            "provider": provider,
+            "task_type": task_type,
+            "status": "active",
+            "metadata": metadata or {},
+            "created_at": None,
+            "updated_at": None,
+        }
     try:
         async with _db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO conversations(user_id, title, model, provider)
-                   VALUES($1,$2,$3,$4) RETURNING *""",
-                user_id, title, model, provider
+                """INSERT INTO conversations(user_id, title, model, provider, task_type, metadata)
+                   VALUES($1,$2,$3,$4,$5,$6) RETURNING *""",
+                user_id, title, model, provider, task_type,
+                json.dumps(metadata or {})
             )
         return dict(row)
     except Exception as e:
@@ -165,6 +268,35 @@ async def list_conversations(user_id: str = "anonymous", limit: int = 50) -> Lis
     except Exception as e:
         logger.error("list_conversations failed: %s", e)
         return []
+
+
+async def get_conversation(conv_id: str) -> Optional[dict]:
+    if not _db_pool:
+        return None
+    try:
+        async with _db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM conversations WHERE id=$1", conv_id
+            )
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error("get_conversation failed: %s", e)
+        return None
+
+
+async def update_conversation_status(conv_id: str, status: str) -> bool:
+    if not _db_pool:
+        return False
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversations SET status=$1, updated_at=NOW() WHERE id=$2",
+                status, conv_id
+            )
+        return True
+    except Exception as e:
+        logger.error("update_conversation_status failed: %s", e)
+        return False
 
 
 async def get_conversation_messages(conv_id: str, limit: int = 40) -> List[dict]:
@@ -188,23 +320,32 @@ async def save_message(
     content: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
-) -> bool:
+    tool_calls: Optional[list] = None,
+    tool_call_id: Optional[str] = None,
+    tokens_used: int = 0,
+    metadata: dict = None,
+) -> Optional[str]:
     if not _db_pool:
-        return False
+        return None
     try:
         async with _db_pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO messages(conversation_id, role, content, provider, model)
-                   VALUES($1,$2,$3,$4,$5)""",
-                conv_id, role, content, provider, model
+            row = await conn.fetchrow(
+                """INSERT INTO messages(conversation_id, role, content, provider, model,
+                   tool_calls, tool_call_id, tokens_used, metadata)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id""",
+                conv_id, role, content, provider, model,
+                json.dumps(tool_calls) if tool_calls else None,
+                tool_call_id,
+                tokens_used,
+                json.dumps(metadata or {})
             )
             await conn.execute(
                 "UPDATE conversations SET updated_at=NOW() WHERE id=$1", conv_id
             )
-        return True
+        return str(row["id"])
     except Exception as e:
         logger.error("save_message failed: %s", e)
-        return False
+        return None
 
 
 async def save_execution(
@@ -243,6 +384,167 @@ async def delete_conversation(conv_id: str) -> bool:
         return False
 
 
+# ─── Memory helpers ───────────────────────────────────────────────────────────
+
+async def save_memory(
+    user_id: str,
+    content: str,
+    conv_id: Optional[str] = None,
+    memory_type: str = "fact",
+    key: Optional[str] = None,
+    importance: float = 0.5,
+    metadata: dict = None,
+) -> bool:
+    if not _db_pool:
+        return False
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_memory(user_id, conversation_id, memory_type, key, content, importance, metadata)
+                   VALUES($1,$2,$3,$4,$5,$6,$7)""",
+                user_id, conv_id, memory_type, key, content, importance,
+                json.dumps(metadata or {})
+            )
+        return True
+    except Exception as e:
+        logger.error("save_memory failed: %s", e)
+        return False
+
+
+async def get_memories(
+    user_id: str = "anonymous",
+    conv_id: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    limit: int = 20,
+) -> List[dict]:
+    if not _db_pool:
+        return []
+    try:
+        conditions = ["user_id=$1"]
+        params: list = [user_id]
+        idx = 2
+        if conv_id:
+            conditions.append(f"conversation_id=${idx}")
+            params.append(conv_id)
+            idx += 1
+        if memory_type:
+            conditions.append(f"memory_type=${idx}")
+            params.append(memory_type)
+            idx += 1
+        params.append(limit)
+        where = " AND ".join(conditions)
+        async with _db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM agent_memory WHERE {where} ORDER BY importance DESC, created_at DESC LIMIT ${idx}",
+                *params
+            )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("get_memories failed: %s", e)
+        return []
+
+
+# ─── Tool calls helpers ───────────────────────────────────────────────────────
+
+async def save_tool_call(
+    conv_id: str,
+    message_id: Optional[str],
+    tool_name: str,
+    tool_input: dict,
+    tool_output: str,
+    status: str = "success",
+    duration_ms: int = 0,
+) -> bool:
+    if not _db_pool:
+        return False
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO tool_calls(conversation_id, message_id, tool_name, tool_input, tool_output, status, duration_ms)
+                   VALUES($1,$2,$3,$4,$5,$6,$7)""",
+                conv_id, message_id, tool_name, json.dumps(tool_input),
+                tool_output, status, duration_ms
+            )
+        return True
+    except Exception as e:
+        logger.error("save_tool_call failed: %s", e)
+        return False
+
+
+async def get_tool_calls(conv_id: str, limit: int = 20) -> List[dict]:
+    if not _db_pool:
+        return []
+    try:
+        async with _db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM tool_calls WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2",
+                conv_id, limit
+            )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("get_tool_calls failed: %s", e)
+        return []
+
+
+# ─── Agent plan helpers ───────────────────────────────────────────────────────
+
+async def create_plan(
+    conv_id: str,
+    task: str,
+    steps: list,
+) -> Optional[str]:
+    if not _db_pool:
+        import uuid
+        return str(uuid.uuid4())
+    try:
+        async with _db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO agent_plans(conversation_id, task, steps)
+                   VALUES($1,$2,$3) RETURNING id""",
+                conv_id, task, json.dumps(steps)
+            )
+        return str(row["id"])
+    except Exception as e:
+        logger.error("create_plan failed: %s", e)
+        return None
+
+
+async def update_plan(
+    plan_id: str,
+    current_step: int,
+    status: str,
+    result: str = "",
+) -> bool:
+    if not _db_pool:
+        return False
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE agent_plans SET current_step=$1, status=$2, result=$3, updated_at=NOW()
+                   WHERE id=$4""",
+                current_step, status, result, plan_id
+            )
+        return True
+    except Exception as e:
+        logger.error("update_plan failed: %s", e)
+        return False
+
+
+async def get_executions(conv_id: str, limit: int = 10) -> List[dict]:
+    if not _db_pool:
+        return []
+    try:
+        async with _db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM executions WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT $2",
+                conv_id, limit
+            )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("get_executions failed: %s", e)
+        return []
+
+
 # ─── Redis helpers ────────────────────────────────────────────────────────────
 
 async def publish_event(room: str, event: dict) -> bool:
@@ -254,6 +556,28 @@ async def publish_event(room: str, event: dict) -> bool:
     except Exception as e:
         logger.warning("Redis publish failed: %s", e)
         return False
+
+
+async def cache_set(key: str, value: Any, ttl: int = 3600) -> bool:
+    if not _redis:
+        return False
+    try:
+        await _redis.setex(key, ttl, json.dumps(value))
+        return True
+    except Exception as e:
+        logger.warning("Redis cache_set failed: %s", e)
+        return False
+
+
+async def cache_get(key: str) -> Optional[Any]:
+    if not _redis:
+        return None
+    try:
+        val = await _redis.get(key)
+        return json.loads(val) if val else None
+    except Exception as e:
+        logger.warning("Redis cache_get failed: %s", e)
+        return None
 
 
 async def redis_ping() -> bool:

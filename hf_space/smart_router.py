@@ -55,16 +55,14 @@ class Provider(str, Enum):
 
 @dataclass
 class KeyState:
-    key:           str
-    provider:      Provider
-    available:     bool  = True
+    key:            str
+    provider:       Provider
+    available:      bool  = True
     cooldown_until: float = 0.0
-    total_requests: int  = 0
-    total_errors:  int   = 0
-    total_success: int   = 0
-    last_error:    str   = ""
-
-    # ── status ────────────────────────────────────────────────────────────────
+    total_requests: int   = 0
+    total_errors:   int   = 0
+    total_success:  int   = 0
+    last_error:     str   = ""
 
     def is_ready(self) -> bool:
         if self.available:
@@ -74,8 +72,6 @@ class KeyState:
             logger.info("Key ...%s healed (cooldown expired)", self.key[-6:])
             return True
         return False
-
-    # ── mutations ─────────────────────────────────────────────────────────────
 
     def mark_success(self):
         self.total_requests += 1
@@ -93,8 +89,6 @@ class KeyState:
             "Key ...%s → cooldown %.0fs  reason=%s",
             self.key[-6:], seconds, reason or "?"
         )
-
-    # ── serialisation ─────────────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
         cd = max(0.0, self.cooldown_until - time.time())
@@ -118,8 +112,6 @@ class SmartRouter:
         self._indices: dict[Provider, int]            = {}
         self._lock = asyncio.Lock()
         self._reload_keys()
-
-    # ── key management ────────────────────────────────────────────────────────
 
     def _reload_keys(self):
         self._pools = {
@@ -156,8 +148,6 @@ class SmartRouter:
         else:
             ks.mark_cooldown(COOLDOWN_NETWORK, reason or f"HTTP {status}")
 
-    # ── health ────────────────────────────────────────────────────────────────
-
     def health(self) -> dict:
         out = {}
         for provider, pool in self._pools.items():
@@ -176,18 +166,22 @@ class SmartRouter:
         messages: list,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        system_instruction: Optional[str] = None,
     ) -> dict:
         url_tpl = (
             "https://generativelanguage.googleapis.com"
             "/v1beta/models/{model}:generateContent"
         )
-        payload = {
+        payload: dict = {
             "contents": messages,
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
             },
         }
+        if system_instruction:
+            payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
+
         for attempt in range(MAX_RETRIES):
             ks = await self.get_key(Provider.GEMINI)
             if not ks:
@@ -199,7 +193,7 @@ class SmartRouter:
                 if resp.status_code == 200:
                     ks.mark_success()
                     return resp.json()
-                body = resp.text[:200]
+                body = resp.text[:300]
                 logger.warning("Gemini HTTP %d  body=%s", resp.status_code, body)
                 self._apply_error(ks, resp.status_code, body)
             except httpx.RequestError as exc:
@@ -428,6 +422,7 @@ class SmartRouter:
         max_tokens: int = 4096,
         preferred_provider: str = "gemini",
         preferred_model: str = "gemini-2.0-flash",
+        system_prompt: Optional[str] = None,
     ) -> dict:
         """
         Try preferred provider first, then fall back across providers.
@@ -448,13 +443,19 @@ class SmartRouter:
             try:
                 if provider_name == "gemini":
                     gemini_msgs = _to_gemini_format(messages)
-                    result = await self.call_gemini(model, gemini_msgs, temperature, max_tokens)
+                    result = await self.call_gemini(model, gemini_msgs, temperature, max_tokens, system_instruction=system_prompt)
                     content = result["candidates"][0]["content"]["parts"][0]["text"]
                 elif provider_name == "sambanova":
-                    result = await self.call_sambanova(model, messages, temperature, max_tokens)
+                    msgs = messages
+                    if system_prompt:
+                        msgs = [{"role": "system", "content": system_prompt}] + [m for m in messages if m.get("role") != "system"]
+                    result = await self.call_sambanova(model, msgs, temperature, max_tokens)
                     content = result["choices"][0]["message"]["content"]
                 elif provider_name == "github_llm":
-                    result = await self.call_github_llm(model, messages, temperature, max_tokens)
+                    msgs = messages
+                    if system_prompt:
+                        msgs = [{"role": "system", "content": system_prompt}] + [m for m in messages if m.get("role") != "system"]
+                    result = await self.call_github_llm(model, msgs, temperature, max_tokens)
                     content = result["choices"][0]["message"]["content"]
                 else:
                     continue
@@ -468,11 +469,19 @@ class SmartRouter:
 # ─── Utilities ────────────────────────────────────────────────────────────────
 
 def _to_gemini_format(messages: list) -> list:
-    """Convert OpenAI-style messages → Gemini contents format."""
+    """Convert OpenAI-style messages → Gemini contents format.
+    NOTE: system messages are handled via system_instruction param, skip them here.
+    """
     out = []
     for m in messages:
-        role = "user" if m.get("role") in ("user", "system") else "model"
-        out.append({"role": role, "parts": [{"text": m.get("content", "")}]})
+        role = m.get("role", "user")
+        if role == "system":
+            continue  # system handled separately via system_instruction
+        gemini_role = "user" if role == "user" else "model"
+        out.append({"role": gemini_role, "parts": [{"text": m.get("content", "")}]})
+    # Gemini requires alternating user/model; ensure starts with user
+    if out and out[0]["role"] == "model":
+        out.insert(0, {"role": "user", "parts": [{"text": ""}]})
     return out
 
 
