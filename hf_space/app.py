@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 
 import persistence as db
 from smart_router import Provider, _to_gemini_format, router as smart_router
+import phase9
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -71,7 +72,7 @@ ALLOWED_ORIGINS: list[str] = [
 async def lifespan(app: FastAPI):
     await db.init_db()
     await db.init_redis()
-    logger.info("🚀 Onehands backend ready — Phase 1-6 active")
+    logger.info("🚀 Onehands backend ready — Phase 1-9 active")
     yield
     await db.close()
     logger.info("🛑 Onehands backend shutdown")
@@ -82,10 +83,12 @@ app = FastAPI(
     title="Onehands AI Backend",
     description=(
         "Autonomous AI Developer platform backend: "
-        "Phase 1-6 complete — multi-provider LLM routing, code execution, "
-        "persistent conversations, realtime streaming, agent loop, memory system."
+        "Phase 1-9 complete — multi-provider LLM routing, code execution, "
+        "persistent conversations, realtime streaming, agent loop, memory system, "
+        "full-stack code generation, GitHub integration, Vercel/HF deployment, "
+        "async task queue, test runner, code review, file workspace."
     ),
-    version="3.0.0",
+    version="9.0.0",
     lifespan=lifespan,
 )
 
@@ -96,6 +99,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Phase 9 Router registration ─────────────────────────────────────────────
+app.include_router(phase9.router)
 
 # ─── WebSocket manager ────────────────────────────────────────────────────────
 
@@ -469,9 +475,9 @@ print(f"File created: /tmp/{filename} ({len(content)} bytes)")
 async def root():
     return {
         "service":  "Onehands AI Backend",
-        "version":  "3.0.0",
+        "version":  "9.0.0",
         "status":   "running",
-        "phases":   "1-6 active",
+        "phases":   "1-9 active",
         "docs":     "/docs",
         "endpoints": [
             "/chat", "/chat/stream", "/execute",
@@ -480,6 +486,12 @@ async def root():
             "/tools", "/tools/execute",
             "/health", "/health/keys",
             "/ws/{room}", "/models",
+            # Phase 9
+            "/dev/generate", "/dev/github", "/dev/deploy",
+            "/dev/test", "/dev/review", "/dev/workflow",
+            "/dev/metrics", "/dev/stacks",
+            "/tasks", "/tasks/{task_id}",
+            "/workspace/files",
         ],
     }
 
@@ -487,19 +499,39 @@ async def root():
 async def health():
     redis_ok = await db.redis_ping()
     db_ok = db.db_connected()
+    github_ok = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT", ""))
+    p9_metrics = phase9._metrics
     return {
         "status":       "ok" if (db_ok and redis_ok) else ("partial" if (db_ok or redis_ok) else "degraded"),
+        "version":      "9.0.0",
         "database":     "connected" if db_ok else "disconnected",
         "redis":        "connected" if redis_ok else "disconnected",
         "e2b":          "configured" if E2B_API_KEY else "not_configured",
+        "github":       "configured" if github_ok else "not_configured",
         "smart_router": smart_router.health(),
         "phases":       {
-            "phase1_llm_routing": True,
-            "phase2_persistence": db_ok,
-            "phase3_realtime":    redis_ok,
-            "phase4_code_exec":   bool(E2B_API_KEY),
-            "phase5_agent_loop":  True,
-            "phase6_memory_tools": True,
+            "phase1_llm_routing":    True,
+            "phase2_persistence":    db_ok,
+            "phase3_realtime":       redis_ok,
+            "phase4_code_exec":      bool(E2B_API_KEY),
+            "phase5_agent_loop":     True,
+            "phase6_memory_tools":   True,
+            "phase9_code_gen":       True,
+            "phase9_github_agent":   github_ok,
+            "phase9_async_tasks":    True,
+            "phase9_deploy_agent":   True,
+            "phase9_test_runner":    bool(E2B_API_KEY),
+            "phase9_code_review":    True,
+            "phase9_workspace":      True,
+            "phase9_workflow":       True,
+        },
+        "phase9_stats": {
+            "total_tasks":      p9_metrics["total_tasks"],
+            "code_generations": p9_metrics["code_generations"],
+            "github_ops":       p9_metrics["github_ops"],
+            "deployments":      p9_metrics["deployments"],
+            "tests_run":        p9_metrics["tests_run"],
+            "reviews_done":     p9_metrics["reviews_done"],
         },
         "timestamp":    time.time(),
     }
@@ -1229,7 +1261,21 @@ async def debug_env():
         "GEMINI_KEYS": f"{len(os.environ.get('GEMINI_KEYS','').split(','))} keys" if os.environ.get("GEMINI_KEYS") else "not_set",
         "SAMBANOVA_KEYS": f"{len(os.environ.get('SAMBANOVA_KEYS','').split(','))} keys" if os.environ.get("SAMBANOVA_KEYS") else "not_set",
         "GITHUB_KEYS": f"{len(os.environ.get('GITHUB_KEYS','').split(','))} keys" if os.environ.get("GITHUB_KEYS") else "not_set",
+        "GITHUB_TOKEN": mask(os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_PAT", "")),
+        "VERCEL_TOKEN": mask(os.environ.get("VERCEL_TOKEN", "")),
+        "HF_TOKEN": mask(os.environ.get("HF_TOKEN", "")),
     }
+
+
+# ─── Phase 9: Register LLM + E2B callbacks ───────────────────────────────────
+# Done after all functions are defined so they're available for injection
+
+phase9.register_llm_fn(_llm_call)
+phase9.register_e2b_fn(_e2b_run)
+phase9.register_emit_fn(_emit)
+phase9.register_execute_tool_fn(_execute_tool)
+
+logger.info("✅ Phase 9 callbacks registered")
 
 
 if __name__ == "__main__":

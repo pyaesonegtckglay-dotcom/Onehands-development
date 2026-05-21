@@ -1,8 +1,8 @@
-# Onehands Autonomous AI Developer — Phase 1-6 Complete
+# Onehands Autonomous AI Developer — Phase 1-9 Complete
 
 ## Architecture
 - **Backend**: FastAPI on Hugging Face Space (PYAE1994/openhands-genspark-agent)
-- **Frontend**: React+Vite on Vercel (openhands-genspark-frontend.vercel.app)
+- **Frontend**: React+Vite on Vercel (poe-agent.vercel.app)
 - **Database**: Supabase PostgreSQL (conversations, messages, executions, memory, tool_calls, plans)
 - **Cache/Realtime**: Upstash Redis (pub/sub, SSE bridge)
 - **Code Execution**: E2B sandbox + local fallback
@@ -90,3 +90,84 @@
 - **Health Panel**: Live system status, phase indicators, API key pool status
 - **Settings Panel**: Provider/model/temperature/max_tokens/system_prompt configuration
 - Sidebar with conversation history
+
+## Phase 9: True Autonomous AI Developer ✅
+The agent doesn't just TALK about coding — it actually DOES it end-to-end.
+
+### 9.1 Full-Stack Code Generator
+- Generate complete production-ready projects from natural language description
+- Supported stacks: `python-fastapi`, `node-express`, `react-vite`, `fullstack-python`, `fullstack-node`
+- LLM-powered architecture planning → file-by-file code generation
+- Auto-includes Dockerfile, test files, README.md
+- Python syntax validation via E2B
+- Files saved to user workspace automatically
+- Endpoints: `POST /dev/generate`, `GET /dev/stacks`
+
+### 9.2 GitHub Developer Agent
+- Full GitHub REST API integration (via PAT token)
+- Operations: `list_repos`, `create_repo`, `get_tree`, `get_file`, `create_branch`, `commit_files`, `create_pr`, `list_prs`
+- Supports committing multiple files in one operation
+- Auto-creates PR with detailed description
+- Endpoint: `POST /dev/github`
+
+### 9.3 Async Task Queue
+- All long-running tasks (generate, test, deploy, workflow) run in background
+- Real-time progress tracking with step-by-step log
+- Redis-augmented in-memory task store
+- Poll status with `GET /tasks/{task_id}`
+- Get full result with `GET /tasks/{task_id}/result`
+- List user's tasks with `GET /tasks`
+- Endpoints: `POST /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/result`, `GET /tasks`
+
+### 9.4 Deploy Agent (Vercel + HuggingFace)
+- Deploy project files to **Vercel** (v13 deployment API)
+- Deploy project files to **HuggingFace Spaces** (Hub API)
+- Supports env var injection for secrets
+- Returns deployment URL immediately
+- Endpoint: `POST /dev/deploy`
+
+### 9.5 Test Runner
+- AI auto-generates pytest/jest/vitest tests from source code
+- Executes tests in E2B sandbox (isolated)
+- Returns: pass/fail counts, test output, exit code, summary
+- Supports Python (pytest) and JavaScript (basic node)
+- Endpoint: `POST /dev/test`
+
+### 9.6 File Workspace
+- Per-user in-memory file sandbox (persisted across requests)
+- CRUD operations on project files
+- Generated project files auto-saved here
+- Endpoints: `POST/GET /workspace/files`, `GET/DELETE /workspace/files/{filename}`
+
+### 9.8 Code Review Agent
+- AI-powered code review (bug detection, security, performance, style)
+- Returns structured JSON: score (1-10), issues with severity, suggestions
+- Review types: `full`, `security`, `performance`, `style`
+- Endpoint: `POST /dev/review`
+
+### 9.9 Full Developer Workflow (Generate → Test → GitHub → Deploy)
+- One-shot autonomous developer workflow
+- Step 1: Generate full project code
+- Step 2: Run tests (if Python)
+- Step 3: Push to GitHub (create branch + commit all files + open PR)
+- Step 4: Deploy to Vercel or HuggingFace
+- Returns: task_id for progress polling, full report on completion
+- Endpoint: `POST /dev/workflow`
+
+### 9.9 Metrics Dashboard
+- Live agent capability metrics
+- Task success rates, operation counts by type
+- Uptime, recent task history
+- Endpoint: `GET /dev/metrics`
+
+## Frontend Phase 9 Panel (DevPanel) ✅
+- **Generate Tab**: Describe project → choose stack → watch files generate live
+- **GitHub Tab**: Perform GitHub operations (list/clone/commit/PR)
+- **Deploy Tab**: Deploy to Vercel or HuggingFace with one click
+- **Test Tab**: Paste code → AI generates + runs tests → see results
+- **Review Tab**: Paste code → get AI code review with issue list + score
+- **Workflow Tab**: Full end-to-end autonomous developer workflow
+- **Metrics Tab**: Live dashboard with success rates, operation counts
+- **Tasks Panel**: Real-time task progress tracker with step logs
+- **Workspace Panel**: Browse and view generated project files
+

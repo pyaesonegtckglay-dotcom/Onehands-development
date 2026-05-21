@@ -7,7 +7,7 @@ export const BACKEND_URL =
 
 export const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 120000,
+  timeout: 180000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -34,7 +34,7 @@ api.interceptors.response.use(
   }
 )
 
-// ── API Methods ──────────────────────────────────────────────────────────────
+// ── Existing API Methods ──────────────────────────────────────────────────────
 
 export const healthApi = {
   check: () => api.get('/health'),
@@ -146,6 +146,130 @@ export const toolsApi = {
   }) => api.post('/tools/execute', data),
 }
 
+// ── Phase 9 API Methods ───────────────────────────────────────────────────────
+
+export const devApi = {
+  // 9.1 Code generation
+  generate: (data: {
+    description: string
+    stack?: string
+    include_tests?: boolean
+    include_dockerfile?: boolean
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/dev/generate', data),
+
+  stacks: () => api.get('/dev/stacks'),
+
+  // 9.2 GitHub operations
+  github: (data: {
+    operation: string
+    repo?: string
+    branch?: string
+    new_branch?: string
+    commit_message?: string
+    files?: Record<string, string>
+    pr_title?: string
+    pr_body?: string
+    base_branch?: string
+    path?: string
+    description?: string
+    private?: boolean
+    user_id?: string
+    github_token?: string
+  }) => api.post('/dev/github', data),
+
+  // 9.4 Deployment
+  deploy: (data: {
+    platform: string
+    project_name: string
+    files: Record<string, string>
+    framework?: string
+    env_vars?: Record<string, string>
+    description?: string
+    user_id?: string
+    vercel_token?: string
+    hf_token?: string
+    hf_space_name?: string
+  }) => api.post('/dev/deploy', data),
+
+  // 9.5 Tests
+  test: (data: {
+    code: string
+    language?: string
+    framework?: string
+    test_type?: string
+    auto_generate?: boolean
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/dev/test', data),
+
+  // 9.8 Code review
+  review: (data: {
+    code: string
+    language?: string
+    context?: string
+    review_type?: string
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/dev/review', data),
+
+  // 9.9 Full workflow
+  workflow: (data: {
+    description: string
+    stack?: string
+    deploy_to?: string
+    project_name?: string
+    run_tests?: boolean
+    model?: string
+    provider?: string
+    user_id?: string
+    github_token?: string
+    vercel_token?: string
+    hf_token?: string
+    github_repo?: string
+  }) => api.post('/dev/workflow', data),
+
+  // Metrics
+  metrics: () => api.get('/dev/metrics'),
+}
+
+// 9.3 Task Queue
+export const tasksApi = {
+  submit: (data: {
+    task_type: string
+    payload: Record<string, unknown>
+    user_id?: string
+  }) => api.post('/tasks', data),
+
+  get: (taskId: string) => api.get(`/tasks/${taskId}`),
+  getResult: (taskId: string) => api.get(`/tasks/${taskId}/result`),
+  list: (userId?: string, limit?: number) => 
+    api.get('/tasks', { params: { user_id: userId || 'anonymous', limit: limit || 20 } }),
+}
+
+// 9.6 Workspace
+export const workspaceApi = {
+  createFile: (data: { filename: string; content: string; user_id?: string }) =>
+    api.post('/workspace/files', data),
+
+  listFiles: (userId?: string) =>
+    api.get('/workspace/files', { params: { user_id: userId || 'anonymous' } }),
+
+  getFile: (filename: string, userId?: string) =>
+    api.get(`/workspace/files/${encodeURIComponent(filename)}`, {
+      params: { user_id: userId || 'anonymous' }
+    }),
+
+  deleteFile: (filename: string, userId?: string) =>
+    api.delete(`/workspace/files/${encodeURIComponent(filename)}`, {
+      params: { user_id: userId || 'anonymous' }
+    }),
+}
+
 // Streaming chat with SSE
 export function streamChat(
   data: {
@@ -218,4 +342,45 @@ export function streamChat(
   runStream()
 
   return () => { aborted = true }
+}
+
+// Task polling helper
+export function pollTask(
+  taskId: string,
+  onProgress: (task: any) => void,
+  onComplete: (result: any) => void,
+  onError: (err: string) => void,
+  intervalMs = 2000,
+  maxWaitMs = 300000
+): () => void {
+  let stopped = false
+  let elapsed = 0
+
+  const poll = async () => {
+    while (!stopped && elapsed < maxWaitMs) {
+      try {
+        const resp = await tasksApi.get(taskId)
+        const task = resp.data
+        onProgress(task)
+        
+        if (task.status === 'success') {
+          // Fetch full result
+          const resultResp = await tasksApi.getResult(taskId)
+          onComplete(resultResp.data)
+          return
+        } else if (task.status === 'failed') {
+          onError(task.error || 'Task failed')
+          return
+        }
+      } catch (e: any) {
+        // ignore polling errors, keep trying
+      }
+      await new Promise(r => setTimeout(r, intervalMs))
+      elapsed += intervalMs
+    }
+    if (!stopped) onError('Task timed out')
+  }
+
+  poll()
+  return () => { stopped = true }
 }

@@ -9,6 +9,7 @@ import MemoryPanel from './components/MemoryPanel'
 import SettingsPanel from './components/SettingsPanel'
 import HealthPanel from './components/HealthPanel'
 import Header from './components/Header'
+import DevPanel from './components/DevPanel'
 import { conversationsApi } from './api'
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
       case 'memory':  return <MemoryPanel />
       case 'settings': return <SettingsPanel />
       case 'health':  return <HealthPanel />
+      case 'dev':     return <DevPanel />
       default:        return <ChatPanel />
     }
   }
