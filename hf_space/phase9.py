@@ -354,14 +354,8 @@ Return ONLY the raw file content. No markdown fences. No explanations. Just the 
     if "python" in req.stack and "main.py" in generated_files:
         _log_progress(task_id, "🧪 Validating Python syntax...", 88)
         main_code = generated_files.get("main.py", "")
-        val_code = f"""
-import ast, sys
-try:
-    ast.parse('''{main_code.replace("'''", "\\'\\'\\'")}''')
-    print("SYNTAX_OK")
-except SyntaxError as e:
-    print(f"SYNTAX_ERROR: {{e}}")
-"""
+        escaped = main_code.replace("'''", "\\'\\'\\'")
+        val_code = "import ast, sys\ntry:\n    ast.parse('''" + escaped + "''')\n    print('SYNTAX_OK')\nexcept SyntaxError as e:\n    print('SYNTAX_ERROR:', e)\n"
         val_result = await _e2b(val_code, "python", 10)
         if "SYNTAX_OK" in val_result.get("output", ""):
             validation = {"status": "passed", "output": "Syntax valid"}
