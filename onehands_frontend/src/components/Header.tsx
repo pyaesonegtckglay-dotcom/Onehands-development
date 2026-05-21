@@ -1,6 +1,6 @@
 import React from 'react'
 import {
-  Menu, MessageSquare, Bot, Code2, Brain, Settings, Activity, Zap, Cpu
+  Menu, MessageSquare, Bot, Code2, Brain, Settings, Activity, Zap, Cpu, FlaskConical
 } from 'lucide-react'
 import { useStore, type ActiveTab } from '../store'
 
@@ -12,6 +12,7 @@ const TABS: { id: ActiveTab; label: string; icon: React.FC<any>; description: st
   { id: 'health',   label: 'Health',   icon: Activity,      description: 'System health & API keys' },
   { id: 'settings', label: 'Settings', icon: Settings,      description: 'Model & provider settings' },
   { id: 'dev',      label: 'Dev',      icon: Cpu,           description: 'Phase 9 — Autonomous Developer', highlight: true },
+  { id: 'phase10',   label: 'Phase 10', icon: FlaskConical,   description: 'Phase 10 — Multi-Agent Orchestration', highlight: true },
 ]
 
 export default function Header() {
@@ -35,7 +36,7 @@ export default function Header() {
             <Zap size={14} className="text-white" />
           </div>
           <span className="font-bold text-white hidden sm:block">Onehands AI</span>
-          <span className="text-xs text-dark-400 hidden md:block">v9.0</span>
+          <span className="text-xs text-dark-400 hidden md:block">v10.0</span>
         </div>
 
         {/* Navigation tabs */}

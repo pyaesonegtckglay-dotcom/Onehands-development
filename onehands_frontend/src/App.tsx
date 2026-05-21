@@ -10,6 +10,7 @@ import SettingsPanel from './components/SettingsPanel'
 import HealthPanel from './components/HealthPanel'
 import Header from './components/Header'
 import DevPanel from './components/DevPanel'
+import Phase10Panel from './components/Phase10Panel'
 import { conversationsApi } from './api'
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
       case 'settings': return <SettingsPanel />
       case 'health':  return <HealthPanel />
       case 'dev':     return <DevPanel />
+      case 'phase10':  return <Phase10Panel />
       default:        return <ChatPanel />
     }
   }

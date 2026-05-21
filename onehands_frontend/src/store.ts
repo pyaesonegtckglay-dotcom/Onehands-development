@@ -53,7 +53,7 @@ export interface Memory {
   created_at?: string
 }
 
-export type ActiveTab = 'chat' | 'agent' | 'execute' | 'memory' | 'settings' | 'health' | 'dev'
+export type ActiveTab = 'chat' | 'agent' | 'execute' | 'memory' | 'settings' | 'health' | 'dev' | 'phase10'
 export type Provider = 'gemini' | 'sambanova' | 'github_llm'
 
 interface AppState {

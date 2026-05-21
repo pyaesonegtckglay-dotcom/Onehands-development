@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 import persistence as db
 from smart_router import Provider, _to_gemini_format, router as smart_router
 import phase9
+import phase10
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -72,7 +73,7 @@ ALLOWED_ORIGINS: list[str] = [
 async def lifespan(app: FastAPI):
     await db.init_db()
     await db.init_redis()
-    logger.info("🚀 Onehands backend ready — Phase 1-9 active")
+    logger.info("🚀 Onehands backend ready — Phase 1-10 active")
     yield
     await db.close()
     logger.info("🛑 Onehands backend shutdown")
@@ -88,7 +89,7 @@ app = FastAPI(
         "full-stack code generation, GitHub integration, Vercel/HF deployment, "
         "async task queue, test runner, code review, file workspace."
     ),
-    version="9.0.0",
+    version="10.0.0",
     lifespan=lifespan,
 )
 
@@ -102,6 +103,7 @@ app.add_middleware(
 
 # ─── Phase 9 Router registration ─────────────────────────────────────────────
 app.include_router(phase9.router)
+app.include_router(phase10.router)
 
 # ─── WebSocket manager ────────────────────────────────────────────────────────
 
@@ -475,9 +477,9 @@ print(f"File created: /tmp/{filename} ({len(content)} bytes)")
 async def root():
     return {
         "service":  "Onehands AI Backend",
-        "version":  "9.0.0",
+        "version":  "10.0.0",
         "status":   "running",
-        "phases":   "1-9 active",
+        "phases":   "1-10 active",
         "docs":     "/docs",
         "endpoints": [
             "/chat", "/chat/stream", "/execute",
@@ -492,6 +494,11 @@ async def root():
             "/dev/metrics", "/dev/stacks",
             "/tasks", "/tasks/{task_id}",
             "/workspace/files",
+            # Phase 10
+            "/p10/orchestrate", "/p10/cicd", "/p10/self-improve",
+            "/p10/task-graph", "/p10/bugfix", "/p10/consensus",
+            "/p10/agents", "/p10/agent-memory", "/p10/stream-code",
+            "/p10/status", "/p10/workspace-search",
         ],
     }
 
@@ -524,6 +531,15 @@ async def health():
             "phase9_code_review":    True,
             "phase9_workspace":      True,
             "phase9_workflow":       True,
+        # Phase 10
+        "phase10_multi_agent":     True,
+        "phase10_cicd":            True,
+        "phase10_self_improve":    True,
+        "phase10_task_graph":      True,
+        "phase10_bugfix":          True,
+        "phase10_consensus":       True,
+        "phase10_streaming":       True,
+        "phase10_agent_memory":    True,
         },
         "phase9_stats": {
             "total_tasks":      p9_metrics["total_tasks"],
@@ -1275,7 +1291,12 @@ phase9.register_e2b_fn(_e2b_run)
 phase9.register_emit_fn(_emit)
 phase9.register_execute_tool_fn(_execute_tool)
 
-logger.info("✅ Phase 9 callbacks registered")
+phase10.register_llm_fn(_llm_call)
+phase10.register_e2b_fn(_e2b_run)
+phase10.register_emit_fn(_emit)
+phase10.register_execute_tool_fn(_execute_tool)
+
+logger.info("✅ Phase 9 + 10 callbacks registered")
 
 
 if __name__ == "__main__":
