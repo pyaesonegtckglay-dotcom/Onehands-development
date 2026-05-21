@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, Component } from 'react'
 import { Toaster } from 'react-hot-toast'
 import { useStore } from './store'
 import Sidebar from './components/Sidebar'
@@ -10,28 +10,68 @@ import SettingsPanel from './components/SettingsPanel'
 import HealthPanel from './components/HealthPanel'
 import Header from './components/Header'
 import DevPanel from './components/DevPanel'
+import ConnectorPanel from './components/ConnectorPanel'
 import { conversationsApi } from './api'
 
-export default function App() {
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+interface EBState { hasError: boolean; error?: string }
+class ErrorBoundary extends Component<{ children: React.ReactNode }, EBState> {
+  constructor(props: any) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  static getDerivedStateFromError(err: Error): EBState {
+    return { hasError: true, error: err.message }
+  }
+  componentDidCatch(err: Error, info: any) {
+    console.error('App crash caught:', err, info)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex h-screen bg-dark-950 items-center justify-center">
+          <div className="card max-w-md text-center space-y-4">
+            <div className="text-red-400 text-4xl">⚠️</div>
+            <h2 className="text-white font-bold text-lg">Something went wrong</h2>
+            <p className="text-dark-400 text-sm">{this.state.error}</p>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false })
+                window.location.reload()
+              }}
+              className="btn-primary"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function AppInner() {
   const { activeTab, sidebarOpen, userId, setConversations } = useStore()
 
-  // Load conversations on mount
   useEffect(() => {
     conversationsApi.list(userId)
-      .then(r => setConversations(r.data))
-      .catch(() => {}) // Graceful degradation
+      .then(r => setConversations(r.data || []))
+      .catch(() => {}) // graceful degradation
   }, [userId])
 
   const renderPanel = () => {
     switch (activeTab) {
-      case 'chat':    return <ChatPanel />
-      case 'agent':   return <AgentPanel />
-      case 'execute': return <ExecutePanel />
-      case 'memory':  return <MemoryPanel />
-      case 'settings': return <SettingsPanel />
-      case 'health':  return <HealthPanel />
-      case 'dev':     return <DevPanel />
-      default:        return <ChatPanel />
+      case 'chat':      return <ChatPanel />
+      case 'agent':     return <AgentPanel />
+      case 'execute':   return <ExecutePanel />
+      case 'memory':    return <MemoryPanel />
+      case 'settings':  return <SettingsPanel />
+      case 'health':    return <HealthPanel />
+      case 'dev':       return <DevPanel />
+      case 'connector': return <ConnectorPanel />
+      default:          return <ChatPanel />
     }
   }
 
@@ -65,5 +105,13 @@ export default function App() {
         </main>
       </div>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   )
 }

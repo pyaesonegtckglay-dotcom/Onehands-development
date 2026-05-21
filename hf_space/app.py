@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 import persistence as db
 from smart_router import Provider, _to_gemini_format, router as smart_router
 import phase9
+import phase10
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -72,7 +73,7 @@ ALLOWED_ORIGINS: list[str] = [
 async def lifespan(app: FastAPI):
     await db.init_db()
     await db.init_redis()
-    logger.info("🚀 Onehands backend ready — Phase 1-9 active")
+    logger.info("🚀 Onehands backend ready — Phase 1-10 active")
     yield
     await db.close()
     logger.info("🛑 Onehands backend shutdown")
@@ -83,12 +84,13 @@ app = FastAPI(
     title="Onehands AI Backend",
     description=(
         "Autonomous AI Developer platform backend: "
-        "Phase 1-9 complete — multi-provider LLM routing, code execution, "
+        "Phase 1-10 complete — multi-provider LLM routing, code execution, "
         "persistent conversations, realtime streaming, agent loop, memory system, "
         "full-stack code generation, GitHub integration, Vercel/HF deployment, "
-        "async task queue, test runner, code review, file workspace."
+        "async task queue, test runner, code review, file workspace, "
+        "universal connector (30+ platforms), browser agent, code intelligence."
     ),
-    version="9.0.0",
+    version="10.0.0",
     lifespan=lifespan,
 )
 
@@ -100,8 +102,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Phase 9 Router registration ─────────────────────────────────────────────
+# ─── Phase 9 & 10 Router registration ───────────────────────────────────────
 app.include_router(phase9.router)
+app.include_router(phase10.router)
 
 # ─── WebSocket manager ────────────────────────────────────────────────────────
 

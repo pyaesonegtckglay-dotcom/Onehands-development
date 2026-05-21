@@ -1,8 +1,8 @@
 import axios from 'axios'
 
 // Backend URL - configurable
-export const BACKEND_URL = 
-  (import.meta as any).env?.VITE_BACKEND_URL || 
+export const BACKEND_URL =
+  (import.meta as any).env?.VITE_BACKEND_URL ||
   'https://pyae1994-openhands-genspark-agent.hf.space'
 
 export const api = axios.create({
@@ -15,8 +15,10 @@ export const api = axios.create({
 
 // Request interceptor
 api.interceptors.request.use((config) => {
-  const userId = localStorage.getItem('onehands_user_id') || 'anonymous'
-  config.headers['X-User-ID'] = userId
+  try {
+    const userId = localStorage.getItem('onehands_user_id') || 'anonymous'
+    config.headers['X-User-ID'] = userId
+  } catch {}
   return config
 })
 
@@ -34,8 +36,7 @@ api.interceptors.response.use(
   }
 )
 
-// ── Existing API Methods ──────────────────────────────────────────────────────
-
+// ── Health ──────────────────────────────────────────────────────────────────────
 export const healthApi = {
   check: () => api.get('/health'),
   keys: () => api.get('/health/keys'),
@@ -46,6 +47,7 @@ export const modelsApi = {
   list: () => api.get('/models'),
 }
 
+// ── Conversations ───────────────────────────────────────────────────────────────
 export const conversationsApi = {
   create: (data: {
     user_id?: string
@@ -55,20 +57,17 @@ export const conversationsApi = {
     task_type?: string
   }) => api.post('/conversations', data),
 
-  list: (userId?: string) => 
+  list: (userId?: string) =>
     api.get('/conversations', { params: { user_id: userId || 'anonymous' } }),
 
   get: (id: string) => api.get(`/conversations/${id}`),
-
   getMessages: (id: string) => api.get(`/conversations/${id}/messages`),
-
   getExecutions: (id: string) => api.get(`/conversations/${id}/executions`),
-
   getToolCalls: (id: string) => api.get(`/conversations/${id}/tool-calls`),
-
   delete: (id: string) => api.delete(`/conversations/${id}`),
 }
 
+// ── Chat ────────────────────────────────────────────────────────────────────────
 export const chatApi = {
   send: (data: {
     conversation_id?: string
@@ -80,6 +79,7 @@ export const chatApi = {
     system_prompt?: string
     auto_fallback?: boolean
     user_id?: string
+    connectors?: Record<string, any>
   }) => api.post('/chat', data),
 
   streamUrl: (convId?: string) => {
@@ -88,6 +88,7 @@ export const chatApi = {
   },
 }
 
+// ── Execute ─────────────────────────────────────────────────────────────────────
 export const executeApi = {
   run: (data: {
     conversation_id?: string
@@ -97,6 +98,7 @@ export const executeApi = {
   }) => api.post('/execute', data),
 }
 
+// ── Agent ───────────────────────────────────────────────────────────────────────
 export const agentApi = {
   runTask: (data: {
     task: string
@@ -108,6 +110,7 @@ export const agentApi = {
     user_id?: string
     use_memory?: boolean
     system_prompt?: string
+    connectors?: Record<string, any>
   }) => api.post('/agent/task', data),
 
   createPlan: (data: {
@@ -119,6 +122,7 @@ export const agentApi = {
   }) => api.post('/agent/plan', data),
 }
 
+// ── Memory ──────────────────────────────────────────────────────────────────────
 export const memoryApi = {
   save: (data: {
     user_id?: string
@@ -137,6 +141,7 @@ export const memoryApi = {
   }) => api.get('/memory', { params }),
 }
 
+// ── Tools ───────────────────────────────────────────────────────────────────────
 export const toolsApi = {
   list: () => api.get('/tools'),
   execute: (data: {
@@ -146,10 +151,8 @@ export const toolsApi = {
   }) => api.post('/tools/execute', data),
 }
 
-// ── Phase 9 API Methods ───────────────────────────────────────────────────────
-
+// ── Phase 9 Dev ──────────────────────────────────────────────────────────────────
 export const devApi = {
-  // 9.1 Code generation
   generate: (data: {
     description: string
     stack?: string
@@ -162,7 +165,6 @@ export const devApi = {
 
   stacks: () => api.get('/dev/stacks'),
 
-  // 9.2 GitHub operations
   github: (data: {
     operation: string
     repo?: string
@@ -180,7 +182,6 @@ export const devApi = {
     github_token?: string
   }) => api.post('/dev/github', data),
 
-  // 9.4 Deployment
   deploy: (data: {
     platform: string
     project_name: string
@@ -194,7 +195,6 @@ export const devApi = {
     hf_space_name?: string
   }) => api.post('/dev/deploy', data),
 
-  // 9.5 Tests
   test: (data: {
     code: string
     language?: string
@@ -206,7 +206,6 @@ export const devApi = {
     user_id?: string
   }) => api.post('/dev/test', data),
 
-  // 9.8 Code review
   review: (data: {
     code: string
     language?: string
@@ -217,7 +216,6 @@ export const devApi = {
     user_id?: string
   }) => api.post('/dev/review', data),
 
-  // 9.9 Full workflow
   workflow: (data: {
     description: string
     stack?: string
@@ -233,11 +231,10 @@ export const devApi = {
     github_repo?: string
   }) => api.post('/dev/workflow', data),
 
-  // Metrics
   metrics: () => api.get('/dev/metrics'),
 }
 
-// 9.3 Task Queue
+// ── Tasks ────────────────────────────────────────────────────────────────────────
 export const tasksApi = {
   submit: (data: {
     task_type: string
@@ -247,11 +244,11 @@ export const tasksApi = {
 
   get: (taskId: string) => api.get(`/tasks/${taskId}`),
   getResult: (taskId: string) => api.get(`/tasks/${taskId}/result`),
-  list: (userId?: string, limit?: number) => 
+  list: (userId?: string, limit?: number) =>
     api.get('/tasks', { params: { user_id: userId || 'anonymous', limit: limit || 20 } }),
 }
 
-// 9.6 Workspace
+// ── Workspace ────────────────────────────────────────────────────────────────────
 export const workspaceApi = {
   createFile: (data: { filename: string; content: string; user_id?: string }) =>
     api.post('/workspace/files', data),
@@ -270,7 +267,29 @@ export const workspaceApi = {
     }),
 }
 
-// Streaming chat with SSE
+// ── Phase 10: Universal Connector ────────────────────────────────────────────────
+export const connectorApi = {
+  test: (data: {
+    platform: string
+    token?: string
+    api_key?: string
+    base_url?: string
+    extra?: Record<string, string>
+  }) => api.post('/connector/test', data),
+
+  call: (data: {
+    platform: string
+    action: string
+    params?: Record<string, unknown>
+    token?: string
+    api_key?: string
+    base_url?: string
+  }) => api.post('/connector/call', data),
+
+  list: () => api.get('/connector/platforms'),
+}
+
+// ── Streaming chat (SSE) ─────────────────────────────────────────────────────────
 export function streamChat(
   data: {
     conversation_id?: string
@@ -281,20 +300,24 @@ export function streamChat(
     max_tokens?: number
     system_prompt?: string
     user_id?: string
+    connectors?: Record<string, any>
   },
   onChunk: (chunk: string) => void,
   onDone: (convId: string, provider: string, model: string) => void,
   onError: (err: string) => void
 ): () => void {
   let aborted = false
-  
+  const userId = (() => { try { return localStorage.getItem('onehands_user_id') || 'anonymous' } catch { return 'anonymous' } })()
+
   const runStream = async () => {
     try {
       const response = await fetch(`${BACKEND_URL}/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': userId,
+        },
         body: JSON.stringify(data),
-        signal: undefined,
       })
 
       if (!response.ok) {
@@ -326,8 +349,8 @@ export function streamChat(
               } else if (event.type === 'error') {
                 onError(event.error || 'Unknown error')
               }
-            } catch (e) {
-              // ignore parse errors
+            } catch (_) {
+              // ignore JSON parse errors
             }
           }
         }
@@ -340,11 +363,10 @@ export function streamChat(
   }
 
   runStream()
-
   return () => { aborted = true }
 }
 
-// Task polling helper
+// ── Task polling ─────────────────────────────────────────────────────────────────
 export function pollTask(
   taskId: string,
   onProgress: (task: any) => void,
@@ -362,9 +384,7 @@ export function pollTask(
         const resp = await tasksApi.get(taskId)
         const task = resp.data
         onProgress(task)
-        
         if (task.status === 'success') {
-          // Fetch full result
           const resultResp = await tasksApi.getResult(taskId)
           onComplete(resultResp.data)
           return
@@ -372,8 +392,8 @@ export function pollTask(
           onError(task.error || 'Task failed')
           return
         }
-      } catch (e: any) {
-        // ignore polling errors, keep trying
+      } catch (_) {
+        // ignore
       }
       await new Promise(r => setTimeout(r, intervalMs))
       elapsed += intervalMs
