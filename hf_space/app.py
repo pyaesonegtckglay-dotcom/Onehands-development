@@ -289,11 +289,32 @@ async def _e2b_run(code: str, language: str, timeout: int) -> dict:
         return await _local_run(code, language, timeout)
     try:
         import e2b_code_interpreter as e2b
+        import inspect
         start = time.time()
-        sandbox = await asyncio.to_thread(e2b.Sandbox, api_key=E2B_API_KEY, timeout=timeout)
+        
+        # Handle both old and new E2B SDK APIs
+        sandbox_cls = e2b.Sandbox if hasattr(e2b, 'Sandbox') else e2b.CodeInterpreter
+        
+        # New E2B SDK (v1.x): uses os.environ E2B_API_KEY automatically, no api_key kwarg
+        # Old E2B SDK (v0.x): accepts api_key=
+        try:
+            # Try new API first (v1.x) — no api_key kwarg
+            os.environ["E2B_API_KEY"] = E2B_API_KEY
+            # v1.x uses context manager or direct create
+            if hasattr(sandbox_cls, 'create'):
+                sandbox = await asyncio.to_thread(sandbox_cls.create)
+            else:
+                sandbox = await asyncio.to_thread(sandbox_cls)
+        except TypeError:
+            # Fallback to old API
+            sandbox = await asyncio.to_thread(sandbox_cls, api_key=E2B_API_KEY, timeout=timeout)
+        
         execution = await asyncio.to_thread(sandbox.run_code, code)
         duration = int((time.time() - start) * 1000)
-        await asyncio.to_thread(sandbox.kill)
+        try:
+            await asyncio.to_thread(sandbox.kill)
+        except Exception:
+            pass
         stdout = "\n".join(str(x) for x in (execution.logs.stdout or []))
         stderr = "\n".join(str(x) for x in (execution.logs.stderr or []))
         # Also get results (e.g., DataFrames, plots)
@@ -313,8 +334,8 @@ async def _e2b_run(code: str, language: str, timeout: int) -> dict:
             "provider":    "e2b",
         }
     except Exception as e:
-        logger.error("E2B execution failed: %s", e)
-        return {"output": "", "error": str(e), "exit_code": 1, "duration_ms": 0, "provider": "e2b"}
+        logger.error("E2B execution failed: %s — falling back to local", e)
+        return await _local_run(code, language, timeout)
 
 
 async def _local_run(code: str, language: str, timeout: int) -> dict:
