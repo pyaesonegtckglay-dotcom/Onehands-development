@@ -822,47 +822,29 @@ Return ONLY the test code. No markdown, no explanations."""
 
     # Execute tests
     if req.language == "python":
-        # Run with pytest in E2B
-        full_code = f"""
-{req.code}
-
-{test_code}
-"""
-        # Add pytest runner
-        runner = f"""
-import pytest, sys, io, traceback
-
-# Write the combined source + tests to a temp file
-import tempfile, os, subprocess
-
-code = '''{full_code.replace("'''", "\\'\\'\\'")}'''
-
-with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-    f.write(code)
-    tmpfile = f.name
-
-result = subprocess.run(
-    [sys.executable, '-m', 'pytest', tmpfile, '-v', '--tb=short', '--no-header'],
-    capture_output=True, text=True, timeout=30
-)
-print(result.stdout)
-if result.stderr:
-    print('STDERR:', result.stderr)
-sys.exit(result.returncode)
-"""
+        # Run with pytest in E2B — build runner string without backslash in f-expr
+        combined = req.code + "\n\n" + test_code
+        safe_combined = combined.replace("\\", "\\\\").replace("'''", "\\'\\'\\'")
+        runner = (
+            "import tempfile, os, subprocess, sys\n"
+            "code = '''" + safe_combined + "'''\n"
+            "with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:\n"
+            "    f.write(code)\n"
+            "    tmpfile = f.name\n"
+            "result = subprocess.run(\n"
+            "    [sys.executable, '-m', 'pytest', tmpfile, '-v', '--tb=short', '--no-header'],\n"
+            "    capture_output=True, text=True, timeout=30\n"
+            ")\n"
+            "print(result.stdout)\n"
+            "if result.stderr:\n"
+            "    print('STDERR:', result.stderr)\n"
+            "sys.exit(result.returncode)\n"
+        )
         exec_result = await _e2b(runner, "python", 60)
         
     elif req.language in ("javascript", "typescript"):
         # Basic node test runner
-        runner = f"""
-// Source code
-{req.code}
-
-// Tests
-{test_code}
-
-console.log('Tests executed (basic node runner)');
-"""
+        runner = "// Source code\n" + req.code + "\n\n// Tests\n" + test_code + "\nconsole.log('Tests executed');\n"
         exec_result = await _e2b(runner, "javascript", 30)
     else:
         exec_result = {"output": "Language not supported for test execution", "error": "", "exit_code": 0}
