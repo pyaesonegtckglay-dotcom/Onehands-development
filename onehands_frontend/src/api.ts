@@ -69,9 +69,21 @@ export const conversationsApi = {
   create: (data: { user_id?: string; title?: string; model?: string; provider?: string }) =>
     api.post('/conversations', data),
   list: (userId?: string) =>
-    api.get('/conversations', { params: { user_id: userId || 'anonymous' } }),
+    api.get('/conversations', { params: { user_id: userId || 'anonymous' } }).then(r => {
+      // HF Space returns {conversations: [...], total: N}, some impls return array directly
+      const data = r.data
+      if (Array.isArray(data)) return data
+      if (data?.conversations && Array.isArray(data.conversations)) return data.conversations
+      return []
+    }),
   get: (id: string) => api.get(`/conversations/${id}`),
-  getMessages: (id: string) => api.get(`/conversations/${id}/messages`),
+  getMessages: (id: string) =>
+    api.get(`/conversations/${id}/messages`).then(r => {
+      const data = r.data
+      if (Array.isArray(data)) return data
+      if (data?.messages && Array.isArray(data.messages)) return data.messages
+      return []
+    }),
   delete: (id: string) => api.delete(`/conversations/${id}`),
 }
 
@@ -139,7 +151,7 @@ export const devApi = {
     user_id?: string
   }) => api.post('/dev/generate', data),
 
-  stacks: () => api.get('/dev/stacks'),
+  stacks: () => api.get('/dev/stacks').then(r => r.data?.stacks || r.data || []),
 
   workflow: (data: {
     description: string
