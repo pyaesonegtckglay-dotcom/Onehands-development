@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import persistence as db
-from smart_router import Provider, _to_gemini_format, router as smart_router
+from smart_router import router as smart_router
 import phase9
 import phase10
 import agent as ag
@@ -430,9 +430,17 @@ class WorkspaceFileRequest(BaseModel):
 # ─── Root & Health ─────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
+    try:
+        router_h = smart_router.health()
+    except Exception:
+        router_h = {}
+    try:
+        db_ok = db.db_connected()
+    except Exception:
+        db_ok = False
     return {
-        "service":  "Onehands AI Backend",
-        "version":  "10.0.0",
+        "service":  "Onehands Autonomous AI Developer",
+        "version":  "12.0.0",
         "status":   "running",
         "phases":   "1-10 active",
         "docs":     "/docs",
@@ -455,24 +463,26 @@ async def root():
             "/p10/agents", "/p10/agent-memory", "/p10/stream-code",
             "/p10/status", "/p10/workspace-search",
         ],
-        "service": "Onehands Autonomous AI Developer",
-        "version": "12.0.0",
-        "status": "running",
-        "phases": {
-            "phase_1": "Smart LLM Routing ✅",
-            "phase_2": "Persistent Conversations ✅",
-            "phase_3": "Realtime Streaming ✅",
-            "phase_4": "Code Execution (E2B) ✅",
-            "phase_5": "ReAct Agent Loop ✅",
-            "phase_6": "Memory System ✅",
-            "phase_7": "Dev Workflow ✅",
-            "phase_8": "Code Intelligence ✅",
-        },
-        "providers": smart_router.health(),
-        "db": "connected" if db.is_db_ok() else "fallback",
-        "redis": "connected" if db.is_redis_ok() else "disabled",
-        "e2b": "configured" if ag.E2B_API_KEY else "not_configured",
+        "db": "connected" if db_ok else "fallback",
+        "providers": router_h,
     }
+
+# ─── Health check helper vars (lazy, called at request time) ──────────────────
+# Module-level calls removed to avoid import-time failures.
+# Use inline try/except in endpoints instead.
+
+def get_p9_metrics():
+    try:
+        from phase9 import metrics as _m
+        return _m
+    except Exception:
+        pass
+    try:
+        from phase9 import get_metrics as _gm
+        return _gm()
+    except Exception:
+        pass
+    return {"total_tasks": 0, "code_generations": 0, "github_ops": 0, "deployments": 0, "tests_run": 0, "reviews_done": 0}
 
 @app.get("/health")
 async def health():
@@ -484,26 +494,43 @@ async def health():
         cpu = 0.0
         mem = 0.0
 
+    try:
+        db_ok_val = db.db_connected()
+    except Exception:
+        db_ok_val = False
+
+    try:
+        redis_ok_val = db.redis_connected()
+    except Exception:
+        redis_ok_val = False
+
+    try:
+        router_health = smart_router.health()
+    except Exception:
+        router_health = {}
+
+    _p9m = get_p9_metrics()
+
     return {
-        "status":       "ok" if (db_ok and redis_ok) else ("partial" if (db_ok or redis_ok) else "degraded"),
+        "status":       "ok" if (db_ok_val and redis_ok_val) else ("partial" if (db_ok_val or redis_ok_val) else "degraded"),
         "version":      "9.0.0",
-        "database":     "connected" if db_ok else "disconnected",
-        "redis":        "connected" if redis_ok else "disconnected",
-        "e2b":          "configured" if E2B_API_KEY else "not_configured",
-        "github":       "configured" if github_ok else "not_configured",
-        "smart_router": smart_router.health(),
+        "database":     "connected" if db_ok_val else "disconnected",
+        "redis":        "connected" if redis_ok_val else "disconnected",
+        "e2b":          "configured" if ag.E2B_API_KEY else "not_configured",
+        "github":       "configured" if bool(os.getenv("GITHUB_TOKEN")) else "not_configured",
+        "smart_router": router_health,
         "phases":       {
             "phase1_llm_routing":    True,
-            "phase2_persistence":    db_ok,
-            "phase3_realtime":       redis_ok,
-            "phase4_code_exec":      bool(E2B_API_KEY),
+            "phase2_persistence":    db_ok_val,
+            "phase3_realtime":       redis_ok_val,
+            "phase4_code_exec":      bool(ag.E2B_API_KEY),
             "phase5_agent_loop":     True,
             "phase6_memory_tools":   True,
             "phase9_code_gen":       True,
-            "phase9_github_agent":   github_ok,
+            "phase9_github_agent":   bool(os.getenv("GITHUB_TOKEN")),
             "phase9_async_tasks":    True,
             "phase9_deploy_agent":   True,
-            "phase9_test_runner":    bool(E2B_API_KEY),
+            "phase9_test_runner":    bool(ag.E2B_API_KEY),
             "phase9_code_review":    True,
             "phase9_workspace":      True,
             "phase9_workflow":       True,
@@ -518,22 +545,21 @@ async def health():
         "phase10_agent_memory":    True,
         },
         "phase9_stats": {
-            "total_tasks":      p9_metrics["total_tasks"],
-            "code_generations": p9_metrics["code_generations"],
-            "github_ops":       p9_metrics["github_ops"],
-            "deployments":      p9_metrics["deployments"],
-            "tests_run":        p9_metrics["tests_run"],
-            "reviews_done":     p9_metrics["reviews_done"],
+            "total_tasks":      _p9m["total_tasks"],
+            "code_generations": _p9m["code_generations"],
+            "github_ops":       _p9m["github_ops"],
+            "deployments":      _p9m["deployments"],
+            "tests_run":        _p9m["tests_run"],
+            "reviews_done":     _p9m["reviews_done"],
         },
         "timestamp":    time.time(),
-        "status": "healthy",
-        "db": db.is_db_ok(),
-        "redis": db.is_redis_ok(),
+        "db": db.db_connected(),
+        "redis": redis_ok_val,
         "e2b": bool(ag.E2B_API_KEY),
-        "providers": smart_router.health(),
+        "providers": router_health,
         "system": {"cpu_percent": cpu, "memory_percent": mem},
-        "timestamp": time.time(),
     }
+
 
 @app.get("/health/keys")
 async def health_keys():
@@ -582,12 +608,35 @@ async def get_conversation(conv_id: str):
 
 @app.get("/conversations/{conv_id}/messages")
 async def get_messages(conv_id: str):
-    return {"messages": await db.get_messages(conv_id)}
+    return {"messages": await db.get_conversation_messages(conv_id)}
 
 @app.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
     await db.delete_conversation(conv_id)
     return {"status": "deleted"}
+
+
+# ─── LLM callback for Phase 9+10 ─────────────────────────────────────────────
+async def _llm_call(provider, model, messages, temperature=0.3, max_tokens=4096,
+                    auto_fallback=True, system_prompt=None):
+    """LLM callback for Phase 9+10 - uses smart_router internally."""
+    result = await smart_router.auto_chat(
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        preferred_provider=provider or "gemini",
+        preferred_model=model or "gemini-2.0-flash",
+        system_prompt=system_prompt,
+    )
+    return result["content"], result["provider"], result["model"]
+
+
+# ─── Event emit callback for Phase 9+10 ───────────────────────────────────────
+async def _emit(event_type: str, data: dict):
+    """Event emitter for Phase 9+10 - logs events."""
+    logger.info(f"[EVENT] {event_type}: {data}")
+    return {"ok": True, "event_type": event_type}
+
 
 # ─── Chat ───────────────────────────────────────────────────────────────────
 @app.post("/chat")
@@ -595,19 +644,22 @@ async def chat(req: ChatRequest):
     # Get conversation history
     history = []
     if req.conversation_id:
-        msgs = await db.get_messages(req.conversation_id, limit=20)
+        msgs = await db.get_conversation_messages(req.conversation_id, limit=20)
         history = [{"role": m["role"], "content": m["content"]} for m in msgs]
 
     messages = history + [{"role": "user", "content": req.message}]
 
-    result = await smart_router.auto_chat(
-        messages=messages,
-        temperature=req.temperature,
-        max_tokens=req.max_tokens,
-        preferred_provider=req.provider,
-        preferred_model=req.model,
-        system_prompt=req.system_prompt,
-    )
+    try:
+        result = await smart_router.auto_chat(
+            messages=messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+            preferred_provider=req.provider,
+            preferred_model=req.model,
+            system_prompt=req.system_prompt,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI provider error: {e}")
 
     # Save messages
     if req.conversation_id:
@@ -628,7 +680,7 @@ async def chat(req: ChatRequest):
 async def chat_stream(req: ChatRequest):
     history = []
     if req.conversation_id:
-        msgs = await db.get_messages(req.conversation_id, limit=20)
+        msgs = await db.get_conversation_messages(req.conversation_id, limit=20)
         history = [{"role": m["role"], "content": m["content"]} for m in msgs]
 
     messages = history + [{"role": "user", "content": req.message}]

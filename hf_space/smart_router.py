@@ -401,3 +401,19 @@ async def auto_stream(
             continue
 
     raise RuntimeError("All streaming providers failed")
+
+
+# ─── Router namespace for app compatibility ──────────────────────────────────
+class _Router:
+    """Compatibility wrapper for app.py imports."""
+
+    def health(self): return health()
+
+    def reload_keys(self): return reload_keys()
+
+    def auto_chat(self, **kwargs): return auto_chat(**kwargs)
+
+    def auto_stream(self, **kwargs): return auto_stream(**kwargs)
+
+
+router = _Router()

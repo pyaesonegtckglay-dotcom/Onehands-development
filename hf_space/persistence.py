@@ -341,7 +341,7 @@ async def save_message(
     tool_calls: Optional[list] = None,
     tool_call_id: Optional[str] = None,
     tokens_used: int = 0,
-    metadata: dict = None,
+    metadata: Optional[dict] = None,
 ) -> Optional[str]:
     if not _db_pool:
         return None
