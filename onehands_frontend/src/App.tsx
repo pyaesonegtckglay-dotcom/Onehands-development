@@ -10,7 +10,7 @@ import SettingsPanel from './components/SettingsPanel'
 import HealthPanel from './components/HealthPanel'
 import Header from './components/Header'
 import DevPanel from './components/DevPanel'
-import ConnectorPanel from './components/ConnectorPanel'
+import Phase10Panel from './components/Phase10Panel'
 import { conversationsApi } from './api'
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
@@ -63,15 +63,15 @@ function AppInner() {
 
   const renderPanel = () => {
     switch (activeTab) {
-      case 'chat':      return <ChatPanel />
-      case 'agent':     return <AgentPanel />
-      case 'execute':   return <ExecutePanel />
-      case 'memory':    return <MemoryPanel />
-      case 'settings':  return <SettingsPanel />
-      case 'health':    return <HealthPanel />
-      case 'dev':       return <DevPanel />
-      case 'connector': return <ConnectorPanel />
-      default:          return <ChatPanel />
+      case 'chat':    return <ChatPanel />
+      case 'agent':   return <AgentPanel />
+      case 'execute': return <ExecutePanel />
+      case 'memory':  return <MemoryPanel />
+      case 'settings': return <SettingsPanel />
+      case 'health':  return <HealthPanel />
+      case 'dev':     return <DevPanel />
+      case 'phase10':  return <Phase10Panel />
+      default:        return <ChatPanel />
     }
   }
 

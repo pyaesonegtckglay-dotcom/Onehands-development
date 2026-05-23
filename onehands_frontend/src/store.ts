@@ -64,6 +64,9 @@ export interface MemoryItem {
   created_at: number
 }
 
+export type ActiveTab = 'chat' | 'agent' | 'execute' | 'memory' | 'settings' | 'health' | 'dev' | 'phase10'
+export type Provider = 'gemini' | 'sambanova' | 'github_llm'
+
 interface AppSettings {
   backendUrl: string
   provider: string
@@ -86,9 +89,9 @@ interface AppSettings {
 
 interface AppState {
   // UI
-  activeTab: Tab
+  activeTab: ActiveTab
   sidebarOpen: boolean
-  setActiveTab: (tab: Tab) => void
+  setActiveTab: (tab: ActiveTab) => void
   setSidebarOpen: (open: boolean) => void
 
   // User

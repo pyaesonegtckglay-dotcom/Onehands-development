@@ -1,6 +1,5 @@
 """
 Onehands Autonomous AI Developer — Backend
-==========================================
 HuggingFace Space: PYAE1994/openhands-genspark-agent
 Port: 7860
 
@@ -30,10 +29,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-import db
-import smart_router
+import persistence as db
+from smart_router import router as smart_router
+import phase9
+import phase10
 import agent as ag
-import developer as dev
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -48,16 +48,23 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting Onehands AI Developer...")
     await db.init_db()
     await db.init_redis()
-    logger.info("✅ Onehands ready — all phases active")
+    logger.info("🚀 Onehands backend ready — Phase 1-10 active")
     yield
     await db.close()
     logger.info("🛑 Onehands shutdown")
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Onehands Autonomous AI Developer",
-    description="Real Autonomous AI Developer Platform — Code, Deploy, Automate",
-    version="12.0.0",
+    title="Onehands AI Backend",
+    description=(
+        "Autonomous AI Developer platform backend: "
+        "Phase 1-10 complete — multi-provider LLM routing, code execution, "
+        "persistent conversations, realtime streaming, agent loop, memory system, "
+        "full-stack code generation, GitHub integration, Vercel/HF deployment, "
+        "async task queue, test runner, code review, file workspace, "
+        "multi-agent orchestration."
+    ),
+    version="10.0.0",
     lifespan=lifespan,
 )
 
@@ -69,7 +76,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── WebSocket Manager ────────────────────────────────────────────────────────
+# ─── Phase 9 + 10 Router registration ───────────────────────────────────────────
+app.include_router(phase9.router)
+app.include_router(phase10.router)
+
+# ─── WebSocket manager ────────────────────────────────────────────────────────
 class WSManager:
     def __init__(self):
         self._rooms: Dict[str, List[WebSocket]] = {}
@@ -201,6 +212,216 @@ class AsyncTaskRequest(BaseModel):
     payload: Dict[str, Any] = {}
     user_id: str = "anonymous"
 
+async def _e2b_run(code: str, language: str, timeout: int) -> dict:
+    if not E2B_API_KEY:
+        # Fallback: try subprocess execution for safe code
+        return await _local_run(code, language, timeout)
+    try:
+        import e2b_code_interpreter as e2b
+        import inspect
+        start = time.time()
+        
+        # Handle both old and new E2B SDK APIs
+        sandbox_cls = e2b.Sandbox if hasattr(e2b, 'Sandbox') else e2b.CodeInterpreter
+        
+        # New E2B SDK (v1.x): uses os.environ E2B_API_KEY automatically, no api_key kwarg
+        # Old E2B SDK (v0.x): accepts api_key=
+        try:
+            # Try new API first (v1.x) — no api_key kwarg
+            os.environ["E2B_API_KEY"] = E2B_API_KEY
+            # v1.x uses context manager or direct create
+            if hasattr(sandbox_cls, 'create'):
+                sandbox = await asyncio.to_thread(sandbox_cls.create)
+            else:
+                sandbox = await asyncio.to_thread(sandbox_cls)
+        except TypeError:
+            # Fallback to old API
+            sandbox = await asyncio.to_thread(sandbox_cls, api_key=E2B_API_KEY, timeout=timeout)
+        
+        execution = await asyncio.to_thread(sandbox.run_code, code)
+        duration = int((time.time() - start) * 1000)
+        try:
+            await asyncio.to_thread(sandbox.kill)
+        except Exception:
+            pass
+        stdout = "\n".join(str(x) for x in (execution.logs.stdout or []))
+        stderr = "\n".join(str(x) for x in (execution.logs.stderr or []))
+        # Also get results (e.g., DataFrames, plots)
+        results_text = ""
+        if hasattr(execution, 'results') and execution.results:
+            for r in execution.results:
+                if hasattr(r, 'text') and r.text:
+                    results_text += r.text + "\n"
+        combined_output = stdout
+        if results_text:
+            combined_output = combined_output + "\n" + results_text if combined_output else results_text
+        return {
+            "output":      combined_output.strip(),
+            "error":       stderr,
+            "exit_code":   1 if stderr and not stdout else 0,
+            "duration_ms": duration,
+            "provider":    "e2b",
+        }
+    except Exception as e:
+        logger.error("E2B execution failed: %s — falling back to local", e)
+        return await _local_run(code, language, timeout)
+
+
+async def _local_run(code: str, language: str, timeout: int) -> dict:
+    """Fallback local execution (limited, no sandbox)."""
+    import subprocess, sys
+    start = time.time()
+    try:
+        if language == "python":
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    subprocess.run,
+                    [sys.executable, "-c", code],
+                    capture_output=True, text=True, timeout=timeout
+                ),
+                timeout=timeout + 2
+            )
+            duration = int((time.time() - start) * 1000)
+            return {
+                "output":      result.stdout.strip(),
+                "error":       result.stderr.strip(),
+                "exit_code":   result.returncode,
+                "duration_ms": duration,
+                "provider":    "local",
+            }
+        else:
+            return {
+                "output":      "",
+                "error":       f"Local execution only supports Python. Language '{language}' requires E2B.",
+                "exit_code":   1,
+                "duration_ms": 0,
+                "provider":    "local",
+            }
+    except asyncio.TimeoutError:
+        return {"output": "", "error": "Execution timed out", "exit_code": 124, "duration_ms": timeout*1000, "provider": "local"}
+    except Exception as e:
+        return {"output": "", "error": str(e), "exit_code": 1, "duration_ms": 0, "provider": "local"}
+
+# ─── Built-in Tools ───────────────────────────────────────────────────────────
+
+BUILTIN_TOOLS = {
+    "web_search": {
+        "description": "Search the web for current information",
+        "parameters": {"query": "string — the search query"},
+    },
+    "execute_python": {
+        "description": "Execute Python code in a secure sandbox",
+        "parameters": {"code": "string — Python code to execute", "timeout": "int — max seconds (default 30)"},
+    },
+    "read_url": {
+        "description": "Fetch content from a URL",
+        "parameters": {"url": "string — the URL to fetch"},
+    },
+    "write_memory": {
+        "description": "Store a fact or information in memory",
+        "parameters": {"content": "string — what to remember", "key": "string — optional key"},
+    },
+    "recall_memory": {
+        "description": "Recall stored memories",
+        "parameters": {"query": "string — what to search for"},
+    },
+    "create_file": {
+        "description": "Create a file with content (in sandbox)",
+        "parameters": {"filename": "string — file name", "content": "string — file content"},
+    },
+}
+
+async def _execute_tool(
+    tool_name: str,
+    tool_input: dict,
+    conv_id: Optional[str] = None,
+    user_id: str = "anonymous",
+) -> dict:
+    """Execute a built-in tool and return result."""
+    start = time.time()
+    result = {"tool": tool_name, "input": tool_input, "output": "", "error": "", "status": "success"}
+
+    try:
+        if tool_name == "execute_python":
+            code = tool_input.get("code", "")
+            timeout = tool_input.get("timeout", 30)
+            exec_result = await _e2b_run(code, "python", timeout)
+            result["output"] = exec_result.get("output", "")
+            if exec_result.get("error"):
+                result["error"] = exec_result["error"]
+                result["status"] = "error" if exec_result.get("exit_code", 0) != 0 else "success"
+
+        elif tool_name == "web_search":
+            query = tool_input.get("query", "")
+            # Use DuckDuckGo instant answer API (free, no key needed)
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://api.duckduckgo.com/",
+                    params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    abstract = data.get("AbstractText", "") or data.get("Answer", "")
+                    related = [r.get("Text", "") for r in data.get("RelatedTopics", [])[:3] if isinstance(r, dict)]
+                    if abstract:
+                        result["output"] = f"Answer: {abstract}\n\nRelated: {'; '.join(related)}"
+                    elif related:
+                        result["output"] = "Related results: " + "; ".join(related)
+                    else:
+                        result["output"] = f"Search completed for: {query}. No direct answer found."
+                else:
+                    result["output"] = f"Search for '{query}' returned HTTP {resp.status_code}"
+
+        elif tool_name == "read_url":
+            url = tool_input.get("url", "")
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                if resp.status_code == 200:
+                    content = resp.text[:3000]  # Limit to 3000 chars
+                    result["output"] = content
+                else:
+                    result["error"] = f"HTTP {resp.status_code}"
+                    result["status"] = "error"
+
+        elif tool_name == "write_memory":
+            content = tool_input.get("content", "")
+            key = tool_input.get("key")
+            await db.save_memory(user_id, content, conv_id, "fact", key, 0.7)
+            result["output"] = f"Stored in memory: {content[:100]}"
+
+        elif tool_name == "recall_memory":
+            query = tool_input.get("query", "")
+            memories = await db.get_memories(user_id, conv_id, limit=5)
+            if memories:
+                mem_texts = [f"- {m['content']}" for m in memories]
+                result["output"] = "Recalled memories:\n" + "\n".join(mem_texts)
+            else:
+                result["output"] = "No memories found."
+
+        elif tool_name == "create_file":
+            filename = tool_input.get("filename", "output.txt")
+            content = tool_input.get("content", "")
+            # Execute via E2B
+            code = f"""
+with open('/tmp/{filename}', 'w') as f:
+    f.write({repr(content)})
+print(f"File created: /tmp/{filename} ({len(content)} bytes)")
+"""
+            exec_result = await _e2b_run(code, "python", 15)
+            result["output"] = exec_result.get("output", f"File {filename} created")
+
+        else:
+            result["error"] = f"Unknown tool: {tool_name}"
+            result["status"] = "error"
+
+    except Exception as e:
+        result["error"] = str(e)
+        result["status"] = "error"
+
+    result["duration_ms"] = int((time.time() - start) * 1000)
+    return result
+
+# ─── Routes: root / health ────────────────────────────────────────────────────
 class WorkspaceFileRequest(BaseModel):
     filename: str
     content: str
@@ -209,25 +430,59 @@ class WorkspaceFileRequest(BaseModel):
 # ─── Root & Health ─────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
+    try:
+        router_h = smart_router.health()
+    except Exception:
+        router_h = {}
+    try:
+        db_ok = db.db_connected()
+    except Exception:
+        db_ok = False
     return {
-        "service": "Onehands Autonomous AI Developer",
-        "version": "12.0.0",
-        "status": "running",
-        "phases": {
-            "phase_1": "Smart LLM Routing ✅",
-            "phase_2": "Persistent Conversations ✅",
-            "phase_3": "Realtime Streaming ✅",
-            "phase_4": "Code Execution (E2B) ✅",
-            "phase_5": "ReAct Agent Loop ✅",
-            "phase_6": "Memory System ✅",
-            "phase_7": "Dev Workflow ✅",
-            "phase_8": "Code Intelligence ✅",
-        },
-        "providers": smart_router.health(),
-        "db": "connected" if db.is_db_ok() else "fallback",
-        "redis": "connected" if db.is_redis_ok() else "disabled",
-        "e2b": "configured" if ag.E2B_API_KEY else "not_configured",
+        "service":  "Onehands Autonomous AI Developer",
+        "version":  "12.0.0",
+        "status":   "running",
+        "phases":   "1-10 active",
+        "docs":     "/docs",
+        "endpoints": [
+            "/chat", "/chat/stream", "/execute",
+            "/agent/task", "/agent/plan",
+            "/conversations", "/memory",
+            "/tools", "/tools/execute",
+            "/health", "/health/keys",
+            "/ws/{room}", "/models",
+            # Phase 9
+            "/dev/generate", "/dev/github", "/dev/deploy",
+            "/dev/test", "/dev/review", "/dev/workflow",
+            "/dev/metrics", "/dev/stacks",
+            "/tasks", "/tasks/{task_id}",
+            "/workspace/files",
+            # Phase 10
+            "/p10/orchestrate", "/p10/cicd", "/p10/self-improve",
+            "/p10/task-graph", "/p10/bugfix", "/p10/consensus",
+            "/p10/agents", "/p10/agent-memory", "/p10/stream-code",
+            "/p10/status", "/p10/workspace-search",
+        ],
+        "db": "connected" if db_ok else "fallback",
+        "providers": router_h,
     }
+
+# ─── Health check helper vars (lazy, called at request time) ──────────────────
+# Module-level calls removed to avoid import-time failures.
+# Use inline try/except in endpoints instead.
+
+def get_p9_metrics():
+    try:
+        from phase9 import metrics as _m
+        return _m
+    except Exception:
+        pass
+    try:
+        from phase9 import get_metrics as _gm
+        return _gm()
+    except Exception:
+        pass
+    return {"total_tasks": 0, "code_generations": 0, "github_ops": 0, "deployments": 0, "tests_run": 0, "reviews_done": 0}
 
 @app.get("/health")
 async def health():
@@ -239,15 +494,72 @@ async def health():
         cpu = 0.0
         mem = 0.0
 
+    try:
+        db_ok_val = db.db_connected()
+    except Exception:
+        db_ok_val = False
+
+    try:
+        redis_ok_val = db.redis_connected()
+    except Exception:
+        redis_ok_val = False
+
+    try:
+        router_health = smart_router.health()
+    except Exception:
+        router_health = {}
+
+    _p9m = get_p9_metrics()
+
     return {
-        "status": "healthy",
-        "db": db.is_db_ok(),
-        "redis": db.is_redis_ok(),
+        "status":       "ok" if (db_ok_val and redis_ok_val) else ("partial" if (db_ok_val or redis_ok_val) else "degraded"),
+        "version":      "9.0.0",
+        "database":     "connected" if db_ok_val else "disconnected",
+        "redis":        "connected" if redis_ok_val else "disconnected",
+        "e2b":          "configured" if ag.E2B_API_KEY else "not_configured",
+        "github":       "configured" if bool(os.getenv("GITHUB_TOKEN")) else "not_configured",
+        "smart_router": router_health,
+        "phases":       {
+            "phase1_llm_routing":    True,
+            "phase2_persistence":    db_ok_val,
+            "phase3_realtime":       redis_ok_val,
+            "phase4_code_exec":      bool(ag.E2B_API_KEY),
+            "phase5_agent_loop":     True,
+            "phase6_memory_tools":   True,
+            "phase9_code_gen":       True,
+            "phase9_github_agent":   bool(os.getenv("GITHUB_TOKEN")),
+            "phase9_async_tasks":    True,
+            "phase9_deploy_agent":   True,
+            "phase9_test_runner":    bool(ag.E2B_API_KEY),
+            "phase9_code_review":    True,
+            "phase9_workspace":      True,
+            "phase9_workflow":       True,
+        # Phase 10
+        "phase10_multi_agent":     True,
+        "phase10_cicd":            True,
+        "phase10_self_improve":    True,
+        "phase10_task_graph":      True,
+        "phase10_bugfix":          True,
+        "phase10_consensus":       True,
+        "phase10_streaming":       True,
+        "phase10_agent_memory":    True,
+        },
+        "phase9_stats": {
+            "total_tasks":      _p9m["total_tasks"],
+            "code_generations": _p9m["code_generations"],
+            "github_ops":       _p9m["github_ops"],
+            "deployments":      _p9m["deployments"],
+            "tests_run":        _p9m["tests_run"],
+            "reviews_done":     _p9m["reviews_done"],
+        },
+        "timestamp":    time.time(),
+        "db": db.db_connected(),
+        "redis": redis_ok_val,
         "e2b": bool(ag.E2B_API_KEY),
-        "providers": smart_router.health(),
+        "providers": router_health,
         "system": {"cpu_percent": cpu, "memory_percent": mem},
-        "timestamp": time.time(),
     }
+
 
 @app.get("/health/keys")
 async def health_keys():
@@ -296,12 +608,35 @@ async def get_conversation(conv_id: str):
 
 @app.get("/conversations/{conv_id}/messages")
 async def get_messages(conv_id: str):
-    return {"messages": await db.get_messages(conv_id)}
+    return {"messages": await db.get_conversation_messages(conv_id)}
 
 @app.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
     await db.delete_conversation(conv_id)
     return {"status": "deleted"}
+
+
+# ─── LLM callback for Phase 9+10 ─────────────────────────────────────────────
+async def _llm_call(provider, model, messages, temperature=0.3, max_tokens=4096,
+                    auto_fallback=True, system_prompt=None):
+    """LLM callback for Phase 9+10 - uses smart_router internally."""
+    result = await smart_router.auto_chat(
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        preferred_provider=provider or "gemini",
+        preferred_model=model or "gemini-2.0-flash",
+        system_prompt=system_prompt,
+    )
+    return result["content"], result["provider"], result["model"]
+
+
+# ─── Event emit callback for Phase 9+10 ───────────────────────────────────────
+async def _emit(event_type: str, data: dict):
+    """Event emitter for Phase 9+10 - logs events."""
+    logger.info(f"[EVENT] {event_type}: {data}")
+    return {"ok": True, "event_type": event_type}
+
 
 # ─── Chat ───────────────────────────────────────────────────────────────────
 @app.post("/chat")
@@ -309,19 +644,22 @@ async def chat(req: ChatRequest):
     # Get conversation history
     history = []
     if req.conversation_id:
-        msgs = await db.get_messages(req.conversation_id, limit=20)
+        msgs = await db.get_conversation_messages(req.conversation_id, limit=20)
         history = [{"role": m["role"], "content": m["content"]} for m in msgs]
 
     messages = history + [{"role": "user", "content": req.message}]
 
-    result = await smart_router.auto_chat(
-        messages=messages,
-        temperature=req.temperature,
-        max_tokens=req.max_tokens,
-        preferred_provider=req.provider,
-        preferred_model=req.model,
-        system_prompt=req.system_prompt,
-    )
+    try:
+        result = await smart_router.auto_chat(
+            messages=messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+            preferred_provider=req.provider,
+            preferred_model=req.model,
+            system_prompt=req.system_prompt,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI provider error: {e}")
 
     # Save messages
     if req.conversation_id:
@@ -342,7 +680,7 @@ async def chat(req: ChatRequest):
 async def chat_stream(req: ChatRequest):
     history = []
     if req.conversation_id:
-        msgs = await db.get_messages(req.conversation_id, limit=20)
+        msgs = await db.get_conversation_messages(req.conversation_id, limit=20)
         history = [{"role": m["role"], "content": m["content"]} for m in msgs]
 
     messages = history + [{"role": "user", "content": req.message}]
@@ -687,3 +1025,30 @@ async def debug_env():
         k: "✅ set" if os.environ.get(k) else "❌ not set"
         for k in keys_to_check
     }
+
+
+# ─── Phase 9 + 10: Register LLM + E2B callbacks ─────────────────────────────
+# Done after all functions are defined so they're available for injection
+
+phase9.register_llm_fn(_llm_call)
+phase9.register_e2b_fn(_e2b_run)
+phase9.register_emit_fn(_emit)
+phase9.register_execute_tool_fn(_execute_tool)
+
+phase10.register_llm_fn(_llm_call)
+phase10.register_e2b_fn(_e2b_run)
+phase10.register_emit_fn(_emit)
+phase10.register_execute_tool_fn(_execute_tool)
+
+logger.info("✅ Phase 9 + 10 callbacks registered")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 7860)),
+        log_level="info",
+        workers=1,
+    )

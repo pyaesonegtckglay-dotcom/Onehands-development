@@ -69,9 +69,21 @@ export const conversationsApi = {
   create: (data: { user_id?: string; title?: string; model?: string; provider?: string }) =>
     api.post('/conversations', data),
   list: (userId?: string) =>
-    api.get('/conversations', { params: { user_id: userId || 'anonymous' } }),
+    api.get('/conversations', { params: { user_id: userId || 'anonymous' } }).then(r => {
+      // HF Space returns {conversations: [...], total: N}, some impls return array directly
+      const data = r.data
+      if (Array.isArray(data)) return data
+      if (data?.conversations && Array.isArray(data.conversations)) return data.conversations
+      return []
+    }),
   get: (id: string) => api.get(`/conversations/${id}`),
-  getMessages: (id: string) => api.get(`/conversations/${id}/messages`),
+  getMessages: (id: string) =>
+    api.get(`/conversations/${id}/messages`).then(r => {
+      const data = r.data
+      if (Array.isArray(data)) return data
+      if (data?.messages && Array.isArray(data.messages)) return data.messages
+      return []
+    }),
   delete: (id: string) => api.delete(`/conversations/${id}`),
 }
 
@@ -139,7 +151,7 @@ export const devApi = {
     user_id?: string
   }) => api.post('/dev/generate', data),
 
-  stacks: () => api.get('/dev/stacks'),
+  stacks: () => api.get('/dev/stacks').then(r => r.data?.stacks || r.data || []),
 
   workflow: (data: {
     description: string
@@ -290,8 +302,109 @@ export function streamChat(
   return () => { cancelled = true }
 }
 
-// ── Poll task until done ───────────────────────────────────────────────────────
-export async function pollTask(
+// ── Phase 10 API Methods ─────────────────────────────────────────────────────
+
+export const p10Api = {
+  // 10.1 Multi-agent orchestration
+  orchestrate: (data: {
+    task: string
+    roles?: string[]
+    parallel?: boolean
+    model?: string
+    provider?: string
+    user_id?: string
+    max_rounds?: number
+    deploy_to?: string
+  }) => api.post('/p10/orchestrate', data),
+
+  // Get orchestration/pipeline result
+  getPipeline: (pipelineId: string) => api.get(`/p10/pipeline/${pipelineId}`),
+
+  // 10.2 CI/CD pipeline
+  cicd: (data: {
+    repo: string
+    branch?: string
+    trigger?: string
+    stages?: string[]
+    code?: string
+    language?: string
+    deploy_to?: string
+    model?: string
+    provider?: string
+    user_id?: string
+    github_token?: string
+  }) => api.post('/p10/cicd', data),
+
+  // 10.3 Self-improvement loop
+  selfImprove: (data: {
+    failed_task: string
+    failure_reason: string
+    original_output?: string
+    max_iterations?: number
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/p10/self-improve', data),
+
+  // 10.4 Task graph DAG
+  taskGraph: (data: {
+    goal: string
+    context?: string
+    max_tasks?: number
+    auto_execute?: boolean
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/p10/task-graph', data),
+
+  // 10.5 Autonomous bug fixer
+  bugfix: (data: {
+    code: string
+    error_message: string
+    language?: string
+    max_attempts?: number
+    model?: string
+    provider?: string
+    user_id?: string
+  }) => api.post('/p10/bugfix', data),
+
+  // 10.9 Multi-model consensus
+  consensus: (data: {
+    prompt: string
+    models?: { provider: string; model: string }[]
+    system_prompt?: string
+    vote_strategy?: string
+    user_id?: string
+  }) => api.post('/p10/consensus', data),
+
+  // 10.10 Agent memory
+  saveMemory: (content: string, userId?: string, importance?: number) =>
+    api.post('/p10/agent-memory', null, {
+      params: { content, user_id: userId || 'anonymous', importance: importance || 0.5 }
+    }),
+
+  getMemory: (query?: string, userId?: string, limit?: number) =>
+    api.get('/p10/agent-memory', {
+      params: { query: query || '', user_id: userId || 'anonymous', limit: limit || 10 }
+    }),
+
+  // Workspace search
+  workspaceSearch: (query: string, userId?: string) =>
+    api.get('/p10/workspace-search', { params: { query, user_id: userId || 'anonymous' } }),
+
+  // Status dashboard
+  status: () => api.get('/p10/status'),
+
+  // List agents
+  agents: (userId?: string) =>
+    api.get('/p10/agents', { params: { user_id: userId || 'anonymous' } }),
+
+  // Stream code (returns URL for SSE)
+  streamCodeUrl: () => `${BACKEND_URL}/p10/stream-code`,
+}
+
+// Task polling helper
+export function pollTask(
   taskId: string,
   onProgress: (task: any) => void,
   intervalMs = 2000,
