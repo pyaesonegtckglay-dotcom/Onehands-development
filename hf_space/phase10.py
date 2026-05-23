@@ -1370,6 +1370,12 @@ async def phase10_status():
         "active_pipelines": sum(1 for p in _cicd_pipelines.values() if p.get("status") in ("queued", "running")),
         "total_pipelines": len(_cicd_pipelines),
         "task_graphs": len(_task_graphs),
+    }
+
+
+# ─── Universal Connector & Browser Agent (from main branch) ─────────────────
+
+
 router = APIRouter(prefix="", tags=["Phase 10 — Universal Connector"])
 
 # ─── Custom tool registry (in-memory, per-process) ──────────────────────────
