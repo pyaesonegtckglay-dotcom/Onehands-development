@@ -1,235 +1,175 @@
 import React, { useState, useEffect } from 'react'
-import { Activity, RefreshCw, Check, X, Key, Zap, Database, Radio, Code2, Bot, Brain, Loader2 } from 'lucide-react'
+import { Activity, Database, Radio, Cpu, MemoryStick, RefreshCw, CheckCircle, XCircle, Server } from 'lucide-react'
 import { useStore } from '../store'
-import { healthApi } from '../api'
-import toast from 'react-hot-toast'
+import { healthApi, setBackendUrl, BACKEND_URL } from '../api'
 
-const PHASE_ICONS: Record<string, React.FC<any>> = {
-  phase1_llm_routing: Key,
-  phase2_persistence: Database,
-  phase3_realtime: Radio,
-  phase4_code_exec: Code2,
-  phase5_agent_loop: Bot,
-  phase6_memory_tools: Brain,
-}
-
-const PHASE_LABELS: Record<string, string> = {
-  phase1_llm_routing: 'Phase 1: LLM Routing',
-  phase2_persistence: 'Phase 2: Persistence',
-  phase3_realtime: 'Phase 3: Realtime',
-  phase4_code_exec: 'Phase 4: Code Exec',
-  phase5_agent_loop: 'Phase 5: Agent Loop',
-  phase6_memory_tools: 'Phase 6: Memory & Tools',
+function StatusBadge({ ok }: { ok: boolean | string }) {
+  const isOk = ok === true || ok === 'connected'
+  return (
+    <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${isOk ? 'bg-green-900 text-green-300' : 'bg-red-900/50 text-red-400'}`}>
+      {isOk ? <CheckCircle size={10} /> : <XCircle size={10} />}
+      {isOk ? 'OK' : (typeof ok === 'string' ? ok : 'DOWN')}
+    </span>
+  )
 }
 
 export default function HealthPanel() {
-  const { healthStatus, setHealthStatus } = useStore()
+  const { settings, healthData, setHealthData } = useStore()
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
-  const loadHealth = async () => {
+  const check = async () => {
+    if (settings.backendUrl !== BACKEND_URL) setBackendUrl(settings.backendUrl)
     setLoading(true)
+    setError('')
     try {
-      const r = await healthApi.check()
-      setHealthStatus(r.data)
+      const res = await healthApi.check()
+      setHealthData(res.data)
     } catch (err: any) {
-      toast.error('Failed to fetch health: ' + (err.message || 'unknown'))
+      setError(err.message || 'Health check failed')
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadHealth()
-  }, [])
+    check()
+    const interval = setInterval(check, 30000)
+    return () => clearInterval(interval)
+  }, [settings.backendUrl])
 
-  const handleReloadKeys = async () => {
-    try {
-      await healthApi.reloadKeys()
-      toast.success('API keys reloaded')
-      loadHealth()
-    } catch {
-      toast.error('Failed to reload keys')
-    }
-  }
-
-  const health = healthStatus as any
-
-  const StatusDot = ({ ok }: { ok: boolean }) => (
-    <div className={`w-2 h-2 rounded-full ${ok ? 'bg-green-400' : 'bg-red-400'} flex-shrink-0`} />
-  )
-
-  const ProviderKeyTable = ({ provider, data }: { provider: string; data: any }) => (
-    <div className="card mt-3">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Key size={14} className="text-dark-400" />
-          <span className="text-sm font-medium capitalize">{provider.replace('_', ' ')}</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-dark-400">
-          <span className="text-green-400">{data.available_keys}</span>
-          <span>/</span>
-          <span>{data.total_keys} keys available</span>
-        </div>
-      </div>
-      <div className="space-y-1.5 max-h-48 overflow-y-auto">
-        {(data.keys || []).map((key: any, i: number) => (
-          <div key={i} className="flex items-center gap-2 text-xs bg-dark-800/50 rounded px-2 py-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${key.available ? 'bg-green-400' : 'bg-red-400'}`} />
-            <span className="font-mono text-dark-400">{key.key_suffix}</span>
-            <span className="text-dark-600">·</span>
-            <span className="text-dark-500">{key.total_requests} req</span>
-            {key.cooldown_remaining > 0 && (
-              <span className="ml-auto text-orange-400">
-                cooldown {key.cooldown_remaining}s
-              </span>
-            )}
-            {key.last_error && (
-              <span className="ml-auto text-red-400 truncate max-w-32">{key.last_error}</span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
+  const h = healthData
 
   return (
-    <div className="flex h-full overflow-y-auto">
-      <div className="w-full max-w-4xl mx-auto p-4 space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Activity size={18} className="text-green-400" />
-            <h2 className="font-semibold text-white">System Health</h2>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleReloadKeys}
-              className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1"
-            >
-              <Key size={12} /> Reload Keys
-            </button>
-            <button
-              onClick={loadHealth}
-              disabled={loading}
-              className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1"
-            >
-              {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-              Refresh
-            </button>
-          </div>
+    <div className="p-4 space-y-4 overflow-y-auto h-full">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Activity size={18} className="text-primary-400" />
+          <h2 className="text-white font-semibold">System Health</h2>
         </div>
+        <button onClick={check} disabled={loading} className="btn-ghost text-xs flex items-center gap-1">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
 
-        {loading && !health ? (
-          <div className="flex justify-center py-12">
-            <Loader2 size={28} className="animate-spin text-brand-400" />
+      {error && (
+        <div className="bg-red-900/30 border border-red-800 rounded-xl p-4">
+          <p className="text-red-400 text-sm">❌ {error}</p>
+          <p className="text-xs text-dark-400 mt-1">Backend: {settings.backendUrl}</p>
+        </div>
+      )}
+
+      {h && (
+        <>
+          {/* Services */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-dark-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Server size={14} className="text-dark-400" />
+                  <span className="text-xs text-dark-400">Backend</span>
+                </div>
+                <StatusBadge ok={h.status === 'healthy'} />
+              </div>
+              <p className="text-xs text-dark-500">{settings.backendUrl.replace('https://', '')}</p>
+            </div>
+            <div className="bg-dark-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Database size={14} className="text-dark-400" />
+                  <span className="text-xs text-dark-400">Database</span>
+                </div>
+                <StatusBadge ok={h.db} />
+              </div>
+              <p className="text-xs text-dark-500">{h.db === true || h.db === 'connected' ? 'PostgreSQL' : 'In-memory fallback'}</p>
+            </div>
+            <div className="bg-dark-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Radio size={14} className="text-dark-400" />
+                  <span className="text-xs text-dark-400">Redis</span>
+                </div>
+                <StatusBadge ok={h.redis} />
+              </div>
+              <p className="text-xs text-dark-500">{h.redis === true || h.redis === 'connected' ? 'Upstash Redis' : 'Disabled'}</p>
+            </div>
+            <div className="bg-dark-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Cpu size={14} className="text-dark-400" />
+                  <span className="text-xs text-dark-400">E2B Sandbox</span>
+                </div>
+                <StatusBadge ok={h.e2b} />
+              </div>
+              <p className="text-xs text-dark-500">{h.e2b ? 'Configured' : 'Not configured'}</p>
+            </div>
           </div>
-        ) : health ? (
-          <>
-            {/* Overall status */}
-            <div className={`card flex items-center gap-3 ${
-              health.status === 'ok'
-                ? 'border-green-700/50 bg-green-900/10'
-                : health.status === 'partial'
-                ? 'border-yellow-700/50 bg-yellow-900/10'
-                : 'border-red-700/50 bg-red-900/10'
-            }`}>
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                health.status === 'ok' ? 'bg-green-900/50' : 'bg-red-900/50'
-              }`}>
-                {health.status === 'ok'
-                  ? <Check size={18} className="text-green-400" />
-                  : <X size={18} className="text-red-400" />
-                }
-              </div>
-              <div>
-                <p className="font-semibold text-white capitalize">{health.status}</p>
-                <p className="text-xs text-dark-400">
-                  DB: {health.database} · Redis: {health.redis} · E2B: {health.e2b}
-                </p>
-              </div>
-              {health.timestamp && (
-                <span className="ml-auto text-xs text-dark-500">
-                  {new Date(health.timestamp * 1000).toLocaleTimeString()}
-                </span>
-              )}
-            </div>
 
-            {/* Phase status */}
-            <div className="card">
-              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-                <Zap size={14} className="text-yellow-400" />
-                Phase Status
-              </h3>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {Object.entries(health.phases || {}).map(([phase, active]) => {
-                  const Icon = PHASE_ICONS[phase] || Activity
-                  return (
-                    <div key={phase} className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
-                      active
-                        ? 'border-green-800/50 bg-green-900/10'
-                        : 'border-dark-700 bg-dark-800/30'
-                    }`}>
-                      <Icon size={14} className={active ? 'text-green-400' : 'text-dark-500'} />
-                      <div className="min-w-0">
-                        <p className={`text-xs font-medium ${active ? 'text-green-300' : 'text-dark-500'}`}>
-                          {PHASE_LABELS[phase] || phase}
-                        </p>
-                      </div>
-                      <div className="ml-auto">
-                        <StatusDot ok={Boolean(active)} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Infrastructure */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'Database', value: health.database, icon: Database },
-                { label: 'Redis', value: health.redis, icon: Radio },
-                { label: 'E2B Sandbox', value: health.e2b, icon: Code2 },
-              ].map(({ label, value, icon: Icon }) => (
-                <div key={label} className={`card flex items-center gap-3 ${
-                  value === 'connected' || value === 'configured'
-                    ? 'border-green-800/30'
-                    : 'border-dark-700'
-                }`}>
-                  <Icon size={16} className={
-                    value === 'connected' || value === 'configured'
-                      ? 'text-green-400' : 'text-dark-500'
-                  } />
-                  <div>
-                    <p className="text-xs text-dark-400">{label}</p>
-                    <p className={`text-sm font-medium ${
-                      value === 'connected' || value === 'configured'
-                        ? 'text-green-300' : 'text-dark-400'
-                    }`}>{value}</p>
+          {/* System Resources */}
+          {h.system && (
+            <div className="bg-dark-800 rounded-xl p-4">
+              <h3 className="text-xs font-semibold text-dark-400 uppercase mb-3">System Resources</h3>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-dark-400">CPU</span>
+                    <span className={h.system.cpu_percent > 80 ? 'text-red-400' : 'text-dark-300'}>
+                      {h.system.cpu_percent?.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${h.system.cpu_percent > 80 ? 'bg-red-500' : 'bg-primary-500'}`}
+                      style={{ width: `${Math.min(h.system.cpu_percent, 100)}%` }}
+                    />
                   </div>
                 </div>
-              ))}
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-dark-400">Memory</span>
+                    <span className={h.system.memory_percent > 85 ? 'text-red-400' : 'text-dark-300'}>
+                      {h.system.memory_percent?.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${h.system.memory_percent > 85 ? 'bg-red-500' : 'bg-blue-500'}`}
+                      style={{ width: `${Math.min(h.system.memory_percent, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
+          )}
 
-            {/* Provider keys */}
-            {health.smart_router && (
-              <div>
-                <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
-                  <Key size={14} className="text-blue-400" />
-                  API Key Pools
-                </h3>
-                {Object.entries(health.smart_router).map(([provider, data]) => (
-                  <ProviderKeyTable key={provider} provider={provider} data={data} />
+          {/* Providers */}
+          {h.providers && (
+            <div className="bg-dark-800 rounded-xl p-4">
+              <h3 className="text-xs font-semibold text-dark-400 uppercase mb-3">LLM Providers</h3>
+              <div className="space-y-2">
+                {Object.entries(h.providers).map(([provider, info]: any) => (
+                  <div key={provider} className="flex items-center justify-between">
+                    <span className="text-sm text-dark-300 capitalize">{provider}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-dark-500">
+                        {info.available}/{info.total} keys
+                      </span>
+                      <StatusBadge ok={info.available > 0} />
+                    </div>
+                  </div>
                 ))}
               </div>
-            )}
-          </>
-        ) : (
-          <div className="text-center py-12 text-dark-400">
-            <Activity size={32} className="mx-auto mb-3 opacity-30" />
-            <p>Click Refresh to load health status</p>
-          </div>
-        )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Backend URL */}
+      <div className="bg-dark-800 rounded-xl p-4">
+        <h3 className="text-xs font-semibold text-dark-400 uppercase mb-2">Backend URL</h3>
+        <code className="text-xs text-primary-300 break-all">{settings.backendUrl}</code>
+        <p className="text-xs text-dark-500 mt-1">Change in Settings → LLM tab</p>
       </div>
     </div>
   )
