@@ -1,5 +1,5 @@
 ---
-title: Onehands AI Backend
+title: Onehands AI Developer
 emoji: 🤖
 colorFrom: blue
 colorTo: purple
@@ -9,55 +9,84 @@ license: mit
 app_port: 7860
 ---
 
-# Onehands AI Backend v3.0 — Phase 1-6 Complete
+# Onehands Autonomous AI Developer v12.0
 
-**Autonomous AI Developer platform backend** — fully operational with all 6 phases.
+**Real autonomous AI developer platform** — not just talk, it actually CODES, EXECUTES, and DEPLOYS.
 
-## ✅ Phase Status
+## ✅ What Works
 
-| Phase | Feature | Status |
-|-------|---------|--------|
-| 1 | Smart LLM Routing (Gemini/SambaNova/GitHub) | ✅ Active |
-| 2 | Persistent Conversations (Supabase PostgreSQL) | ✅ Active |
-| 3 | Realtime Streaming (SSE + WebSocket + Redis) | ✅ Active |
-| 4 | Code Execution (E2B sandbox + local fallback) | ✅ Active |
-| 5 | Autonomous Agent Loop (multi-step planning) | ✅ Active |
-| 6 | Memory System + Tool Calling + Advanced Planning | ✅ Active |
+| Feature | Endpoint | Status |
+|---------|----------|--------|
+| Multi-provider chat | POST /chat | ✅ |
+| Streaming chat | POST /chat/stream | ✅ |
+| ReAct agent loop | POST /agent/task | ✅ |
+| Code execution | POST /execute | ✅ E2B + local |
+| Project generation | POST /dev/generate | ✅ |
+| GitHub operations | POST /dev/github | ✅ |
+| Full dev workflow | POST /dev/workflow | ✅ |
+| Code intelligence | POST /dev/explain etc | ✅ |
+| Async tasks | POST /tasks | ✅ |
+| File workspace | POST /workspace/files | ✅ |
+| Memory system | POST /memory | ✅ |
 
-## 🔑 Required HF Space Secrets
+## 🔑 Required Secrets (HF Space Settings → Variables)
 
 ```
-GEMINI_KEY=key1,key2,...
-SAMBANOVA_KEY=key1,key2,...
-GITHUB_KEY=key1,key2,...
-DATABASE_URL=postgresql://user:pass@host:5432/db
-REDIS_URL=redis://...
-E2B_API_KEY=...
+GEMINI_KEY=key1,key2,...          # Google Gemini API keys
+GITHUB_TOKEN=ghp_xxx              # GitHub token (for LLM + GitHub ops)
+SAMBANOVA_KEY=xxx                 # SambaNova API key  
+DATABASE_URL=postgresql://...     # Supabase PostgreSQL
+REDIS_URL=redis://...             # Upstash Redis
+E2B_API_KEY=e2b_xxx               # E2B code execution sandbox
+HF_TOKEN=hf_xxx                   # HuggingFace token
+VERCEL_TOKEN=vcp_xxx              # Vercel deploy token
 ```
 
-## 📡 API Endpoints
+## 🚀 Quick Start
 
-| Method | Path | Phase | Description |
-|--------|------|-------|-------------|
-| GET | `/` | - | Service info |
-| GET | `/health` | 1-6 | Full health check |
-| GET | `/health/keys` | 1 | API key pool status |
-| POST | `/health/reload-keys` | 1 | Hot-reload API keys |
-| POST | `/chat` | 1+2 | Chat (non-streaming) |
-| POST | `/chat/stream` | 1+3 | Chat (SSE streaming) |
-| GET | `/chat/stream/{id}` | 3 | Subscribe to events |
-| WS | `/ws/{room}` | 3 | WebSocket room |
-| POST | `/execute` | 4 | Run code in E2B sandbox |
-| POST | `/agent/task` | 5+6 | Autonomous agent task |
-| POST | `/agent/plan` | 5+6 | Create execution plan |
-| GET | `/tools` | 6 | List available tools |
-| POST | `/tools/execute` | 6 | Execute a tool |
-| POST | `/memory` | 6 | Save memory |
-| GET | `/memory` | 6 | Retrieve memories |
-| GET | `/conversations` | 2 | List conversations |
-| POST | `/conversations` | 2 | Create conversation |
-| GET | `/conversations/{id}/messages` | 2 | Get messages |
-| GET | `/conversations/{id}/executions` | 4 | Get executions |
-| GET | `/conversations/{id}/tool-calls` | 6 | Get tool calls |
-| DELETE | `/conversations/{id}` | 2 | Delete conversation |
-| GET | `/models` | 1 | Available models list |
+```bash
+# Chat
+curl -X POST https://pyae1994-openhands-genspark-agent.hf.space/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!", "provider": "gemini"}'
+
+# Run autonomous agent task
+curl -X POST https://pyae1994-openhands-genspark-agent.hf.space/agent/task \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Write and run a Python fibonacci function", "max_steps": 5}'
+
+# Generate a full project
+curl -X POST https://pyae1994-openhands-genspark-agent.hf.space/dev/workflow \
+  -H "Content-Type: application/json" \
+  -d '{"description": "REST API for todo list", "stack": "python-fastapi"}'
+```
+
+## 📡 All API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Service info |
+| GET | `/health` | Health check |
+| GET | `/models` | Available models |
+| POST | `/chat` | Chat (non-streaming) |
+| POST | `/chat/stream` | Chat (SSE streaming) |
+| WS | `/ws/{room}` | WebSocket |
+| POST | `/execute` | Run code in E2B |
+| POST | `/agent/task` | Autonomous agent |
+| POST | `/agent/plan` | Generate plan |
+| POST | `/memory` | Save memory |
+| GET | `/memory` | Get memories |
+| POST | `/conversations` | Create conversation |
+| GET | `/conversations` | List conversations |
+| POST | `/dev/generate` | Generate project |
+| POST | `/dev/workflow` | Full dev workflow |
+| POST | `/dev/github` | GitHub operations |
+| POST | `/dev/deploy` | Deploy to Vercel/HF |
+| POST | `/dev/explain` | Explain code |
+| POST | `/dev/refactor` | Refactor code |
+| POST | `/dev/debug` | Debug code |
+| POST | `/dev/review` | Review code |
+| POST | `/tasks` | Submit async task |
+| GET | `/tasks/{id}` | Get task status |
+| POST | `/workspace/files` | Create file |
+| GET | `/workspace/files` | List files |

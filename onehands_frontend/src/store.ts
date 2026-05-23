@@ -1,137 +1,165 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
+export type Tab = 'chat' | 'agent' | 'execute' | 'memory' | 'settings' | 'health' | 'dev' | 'connector'
 
 export interface Message {
   id: string
-  role: MessageRole
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   provider?: string
   model?: string
-  created_at?: string
+  timestamp: number
   isStreaming?: boolean
-  tool_calls?: ToolCall[]
-}
-
-export interface ToolCall {
-  tool: string
-  input: Record<string, unknown>
-  output?: string
-  status?: string
-  duration_ms?: number
-}
-
-export interface TraceStep {
-  step: number
-  type: 'thought' | 'tool_call' | 'execution' | 'error' | 'final_answer'
-  content?: string
-  tool?: string
-  input?: Record<string, unknown>
-  output?: string
-  status?: string
-  error?: string
 }
 
 export interface Conversation {
   id: string
   title: string
-  model: string
-  provider: string
-  task_type: string
-  created_at?: string
-  updated_at?: string
   user_id?: string
+  model?: string
+  provider?: string
+  created_at?: number
+  updated_at?: number
 }
 
-export interface Memory {
+export interface AgentStep {
+  step: number
+  thought: string
+  action?: string
+  action_input?: any
+  observation?: string
+  provider?: string
+  model?: string
+  final_answer?: string
+}
+
+export interface AgentResult {
+  task_id: string
+  task: string
+  steps_taken: number
+  history: AgentStep[]
+  final_answer?: string
+  status: string
+  duration_ms?: number
+}
+
+export interface ExecutionResult {
+  stdout: string
+  stderr: string
+  exit_code: number
+  error?: string
+  language: string
+  duration_ms?: number
+  sandbox?: string
+}
+
+export interface MemoryItem {
   id: string
+  user_id: string
   content: string
   memory_type: string
   key?: string
   importance: number
-  created_at?: string
+  created_at: number
 }
 
 export type ActiveTab = 'chat' | 'agent' | 'execute' | 'memory' | 'settings' | 'health' | 'dev' | 'phase10'
 export type Provider = 'gemini' | 'sambanova' | 'github_llm'
 
+interface AppSettings {
+  backendUrl: string
+  provider: string
+  model: string
+  temperature: number
+  maxTokens: number
+  maxSteps: number
+  autoExecuteCode: boolean
+  useMemory: boolean
+  systemPrompt: string
+  // API keys (stored locally)
+  geminiKey: string
+  githubToken: string
+  sambaNovaKey: string
+  e2bApiKey: string
+  hfToken: string
+  vercelToken: string
+  githubRepoDefault: string
+}
+
 interface AppState {
   // UI
   activeTab: ActiveTab
   sidebarOpen: boolean
-  darkMode: boolean
-  
+  setActiveTab: (tab: ActiveTab) => void
+  setSidebarOpen: (open: boolean) => void
+
   // User
   userId: string
-  
+  setUserId: (id: string) => void
+
   // Conversations
   conversations: Conversation[]
   activeConversationId: string | null
-  
-  // Messages
-  messages: Record<string, Message[]>
-  
-  // Agent
-  agentRunning: boolean
-  agentSteps: number
-  agentTrace: TraceStep[]
-  agentFinalAnswer: string
-  
-  // Code execution
-  codeOutput: string
-  codeError: string
-  codeRunning: boolean
-  
-  // Memory
-  memories: Memory[]
-  
-  // Models
-  selectedModel: string
-  selectedProvider: Provider
-  temperature: number
-  maxTokens: number
-  systemPrompt: string
-  
-  // Loading states
-  isLoading: boolean
-  isStreaming: boolean
-  
-  // Health
-  healthStatus: Record<string, unknown> | null
-
-  // Actions
-  setActiveTab: (tab: ActiveTab) => void
-  setSidebarOpen: (open: boolean) => void
-  setUserId: (id: string) => void
   setConversations: (convs: Conversation[]) => void
+  setActiveConversation: (id: string | null) => void
   addConversation: (conv: Conversation) => void
   removeConversation: (id: string) => void
-  setActiveConversation: (id: string | null) => void
-  addMessage: (convId: string, msg: Message) => void
-  updateMessage: (convId: string, msgId: string, updates: Partial<Message>) => void
-  setMessages: (convId: string, msgs: Message[]) => void
+
+  // Chat messages (current conversation)
+  messages: Message[]
+  setMessages: (msgs: Message[]) => void
+  addMessage: (msg: Message) => void
+  updateLastMessage: (patch: Partial<Message>) => void
+  clearMessages: () => void
+
+  // Agent
+  agentResult: AgentResult | null
+  agentRunning: boolean
+  setAgentResult: (result: AgentResult | null) => void
   setAgentRunning: (running: boolean) => void
-  setAgentSteps: (steps: number) => void
-  addAgentTrace: (step: TraceStep) => void
-  clearAgentTrace: () => void
-  setAgentFinalAnswer: (answer: string) => void
-  setCodeOutput: (out: string) => void
-  setCodeError: (err: string) => void
-  setCodeRunning: (running: boolean) => void
-  setMemories: (mems: Memory[]) => void
-  addMemory: (mem: Memory) => void
-  setSelectedModel: (model: string) => void
-  setSelectedProvider: (provider: Provider) => void
-  setTemperature: (t: number) => void
-  setMaxTokens: (t: number) => void
-  setSystemPrompt: (p: string) => void
-  setIsLoading: (l: boolean) => void
-  setIsStreaming: (s: boolean) => void
-  setHealthStatus: (h: Record<string, unknown>) => void
+
+  // Execute
+  lastExecution: ExecutionResult | null
+  setLastExecution: (result: ExecutionResult | null) => void
+
+  // Memory
+  memories: MemoryItem[]
+  setMemories: (mems: MemoryItem[]) => void
+  addMemory: (mem: MemoryItem) => void
+
+  // Tasks
+  activeTasks: Record<string, any>
+  setTask: (id: string, task: any) => void
+  removeTask: (id: string) => void
+
+  // Settings
+  settings: AppSettings
+  updateSettings: (patch: Partial<AppSettings>) => void
+
+  // Health
+  healthData: any
+  setHealthData: (data: any) => void
 }
 
-const generateId = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+const DEFAULT_SETTINGS: AppSettings = {
+  backendUrl: 'https://pyae1994-openhands-genspark-agent.hf.space',
+  provider: 'gemini',
+  model: 'gemini-2.0-flash',
+  temperature: 0.7,
+  maxTokens: 4096,
+  maxSteps: 10,
+  autoExecuteCode: true,
+  useMemory: true,
+  systemPrompt: '',
+  geminiKey: '',
+  githubToken: '',
+  sambaNovaKey: '',
+  e2bApiKey: '',
+  hfToken: '',
+  vercelToken: '',
+  githubRepoDefault: '',
+}
 
 export const useStore = create<AppState>()(
   persist(
@@ -139,116 +167,83 @@ export const useStore = create<AppState>()(
       // UI
       activeTab: 'chat',
       sidebarOpen: true,
-      darkMode: true,
-      
+      setActiveTab: (tab) => set({ activeTab: tab }),
+      setSidebarOpen: (open) => set({ sidebarOpen: open }),
+
       // User
-      userId: (() => {
-        const stored = localStorage.getItem('onehands_user_id')
-        if (stored) return stored
-        const newId = `user_${generateId()}`
-        localStorage.setItem('onehands_user_id', newId)
-        return newId
-      })(),
-      
+      userId: `user_${Math.random().toString(36).slice(2, 10)}`,
+      setUserId: (id) => set({ userId: id }),
+
       // Conversations
       conversations: [],
       activeConversationId: null,
-      
-      // Messages
-      messages: {},
-      
+      setConversations: (convs) => set({ conversations: convs }),
+      setActiveConversation: (id) => set({ activeConversationId: id }),
+      addConversation: (conv) =>
+        set((s) => ({ conversations: [conv, ...s.conversations] })),
+      removeConversation: (id) =>
+        set((s) => ({
+          conversations: s.conversations.filter((c) => c.id !== id),
+          activeConversationId: s.activeConversationId === id ? null : s.activeConversationId,
+        })),
+
+      // Chat
+      messages: [],
+      setMessages: (msgs) => set({ messages: msgs }),
+      addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+      updateLastMessage: (patch) =>
+        set((s) => {
+          const msgs = [...s.messages]
+          if (msgs.length > 0) {
+            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], ...patch }
+          }
+          return { messages: msgs }
+        }),
+      clearMessages: () => set({ messages: [] }),
+
       // Agent
+      agentResult: null,
       agentRunning: false,
-      agentSteps: 0,
-      agentTrace: [],
-      agentFinalAnswer: '',
-      
-      // Code
-      codeOutput: '',
-      codeError: '',
-      codeRunning: false,
-      
+      setAgentResult: (result) => set({ agentResult: result }),
+      setAgentRunning: (running) => set({ agentRunning: running }),
+
+      // Execute
+      lastExecution: null,
+      setLastExecution: (result) => set({ lastExecution: result }),
+
       // Memory
       memories: [],
-      
-      // Models
-      selectedModel: 'gemini-2.0-flash',
-      selectedProvider: 'gemini',
-      temperature: 0.7,
-      maxTokens: 4096,
-      systemPrompt: '',
-      
-      // Loading
-      isLoading: false,
-      isStreaming: false,
-      
-      // Health
-      healthStatus: null,
-
-      // Actions
-      setActiveTab: (tab) => set({ activeTab: tab }),
-      setSidebarOpen: (open) => set({ sidebarOpen: open }),
-      setUserId: (id) => {
-        localStorage.setItem('onehands_user_id', id)
-        set({ userId: id })
-      },
-      setConversations: (convs) => set({ conversations: convs }),
-      addConversation: (conv) => set((s) => ({
-        conversations: [conv, ...s.conversations.filter(c => c.id !== conv.id)]
-      })),
-      removeConversation: (id) => set((s) => ({
-        conversations: s.conversations.filter(c => c.id !== id),
-        activeConversationId: s.activeConversationId === id ? null : s.activeConversationId,
-      })),
-      setActiveConversation: (id) => set({ activeConversationId: id }),
-      addMessage: (convId, msg) => set((s) => ({
-        messages: {
-          ...s.messages,
-          [convId]: [...(s.messages[convId] || []), msg],
-        }
-      })),
-      updateMessage: (convId, msgId, updates) => set((s) => ({
-        messages: {
-          ...s.messages,
-          [convId]: (s.messages[convId] || []).map(m =>
-            m.id === msgId ? { ...m, ...updates } : m
-          ),
-        }
-      })),
-      setMessages: (convId, msgs) => set((s) => ({
-        messages: { ...s.messages, [convId]: msgs }
-      })),
-      setAgentRunning: (running) => set({ agentRunning: running }),
-      setAgentSteps: (steps) => set({ agentSteps: steps }),
-      addAgentTrace: (step) => set((s) => ({ agentTrace: [...s.agentTrace, step] })),
-      clearAgentTrace: () => set({ agentTrace: [], agentFinalAnswer: '', agentSteps: 0 }),
-      setAgentFinalAnswer: (answer) => set({ agentFinalAnswer: answer }),
-      setCodeOutput: (out) => set({ codeOutput: out }),
-      setCodeError: (err) => set({ codeError: err }),
-      setCodeRunning: (running) => set({ codeRunning: running }),
       setMemories: (mems) => set({ memories: mems }),
       addMemory: (mem) => set((s) => ({ memories: [mem, ...s.memories] })),
-      setSelectedModel: (model) => set({ selectedModel: model }),
-      setSelectedProvider: (provider) => set({ selectedProvider: provider }),
-      setTemperature: (t) => set({ temperature: t }),
-      setMaxTokens: (t) => set({ maxTokens: t }),
-      setSystemPrompt: (p) => set({ systemPrompt: p }),
-      setIsLoading: (l) => set({ isLoading: l }),
-      setIsStreaming: (s) => set({ isStreaming: s }),
-      setHealthStatus: (h) => set({ healthStatus: h }),
+
+      // Tasks
+      activeTasks: {},
+      setTask: (id, task) =>
+        set((s) => ({ activeTasks: { ...s.activeTasks, [id]: task } })),
+      removeTask: (id) =>
+        set((s) => {
+          const t = { ...s.activeTasks }
+          delete t[id]
+          return { activeTasks: t }
+        }),
+
+      // Settings
+      settings: DEFAULT_SETTINGS,
+      updateSettings: (patch) =>
+        set((s) => ({ settings: { ...s.settings, ...patch } })),
+
+      // Health
+      healthData: null,
+      setHealthData: (data) => set({ healthData: data }),
     }),
     {
-      name: 'onehands-store',
+      name: 'onehands-store-v3',
       partialize: (state) => ({
         userId: state.userId,
-        selectedModel: state.selectedModel,
-        selectedProvider: state.selectedProvider,
-        temperature: state.temperature,
-        maxTokens: state.maxTokens,
-        systemPrompt: state.systemPrompt,
+        settings: state.settings,
         sidebarOpen: state.sidebarOpen,
         conversations: state.conversations.slice(0, 50),
-      })
+      }),
     }
   )
 )

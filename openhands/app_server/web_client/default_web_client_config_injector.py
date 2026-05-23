@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from urllib.parse import urlparse
 
 from pydantic import Field
 
@@ -83,6 +84,9 @@ def _get_providers_configured() -> list[ProviderType]:
     if os.getenv('BITBUCKET_APP_CLIENT_ID', '').strip():
         providers.append(ProviderType.BITBUCKET)
 
+    if os.getenv('BITBUCKET_DATA_CENTER_CLIENT_ID', '').strip():
+        providers.append(ProviderType.BITBUCKET_DATA_CENTER)
+
     if os.getenv('ENABLE_ENTERPRISE_SSO', '').strip():
         providers.append(ProviderType.ENTERPRISE_SSO)
 
@@ -107,6 +111,23 @@ def _get_slack_enabled() -> bool:
         and bool(os.getenv('SLACK_CLIENT_SECRET', '').strip())
         and bool(os.getenv('SLACK_SIGNING_SECRET', '').strip())
     )
+
+
+def _get_jira_dc_oauth_host() -> str | None:
+    """Hostname of the Jira Data Center server when DC OAuth is configured.
+
+    Surfaced to the web client so the configure form can pre-fill and lock the
+    workspace/host field in OAuth mode — the OAuth callback only accepts this
+    exact host, so re-typing it is redundant and error-prone. Returns None in
+    email-match mode (``JIRA_DC_ENABLE_OAUTH`` off) or when no base URL is set,
+    leaving the host field free-text for the admin to enter per workspace.
+    """
+    if os.getenv('JIRA_DC_ENABLE_OAUTH', '1') not in ('1', 'true'):
+        return None
+    base_url = os.getenv('JIRA_DC_BASE_URL', '').strip()
+    if not base_url:
+        return None
+    return urlparse(base_url).hostname or None
 
 
 def _get_feature_flags() -> WebClientFeatureFlags:
@@ -161,6 +182,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         }
     )
     slack_enabled: bool = Field(default_factory=_get_slack_enabled)
+    jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -194,6 +216,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             gitlab_enabled=self.gitlab_enabled,
             provider_default_hosts=self.provider_default_hosts,
             slack_enabled=self.slack_enabled,
+            jira_dc_oauth_host=self.jira_dc_oauth_host,
             acp_providers=self.acp_providers,
         )
         return result

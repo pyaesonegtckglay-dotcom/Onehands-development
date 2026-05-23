@@ -1,15 +1,15 @@
-# Onehands Autonomous AI Developer — Phase 1-9 Complete
+# Onehands Autonomous AI Developer — Phase 1-10 Complete
 
 ## Architecture
 - **Backend**: FastAPI on Hugging Face Space (PYAE1994/openhands-genspark-agent)
-- **Frontend**: React+Vite on Vercel (poe-agent.vercel.app)
+- **Frontend**: React 18 + Vite + TypeScript on Vercel (poe-agent.vercel.app)
 - **Database**: Supabase PostgreSQL (conversations, messages, executions, memory, tool_calls, plans)
 - **Cache/Realtime**: Upstash Redis (pub/sub, SSE bridge)
 - **Code Execution**: E2B sandbox + local fallback
-- **LLM Providers**: Gemini, SambaNova, GitHub Models
+- **LLM Providers**: Gemini, SambaNova, GitHub Models, OpenAI, Anthropic, Groq, OpenRouter
 
 ## Phase 1: Smart LLM Routing ✅
-- Multi-provider routing: Gemini / SambaNova / GitHub Models
+- Multi-provider routing: Gemini / SambaNova / GitHub Models / OpenAI / Anthropic / Groq / OpenRouter
 - Round-robin key selection across multiple API keys
 - Per-key cooldown on rate limits (429) → 60s cooldown
 - Hard fail cooldown on auth errors (401/403) → 300s
@@ -47,7 +47,7 @@
 - Endpoint: POST /execute
 
 ## Phase 5: Autonomous Agent Loop ✅
-- Multi-step task planning (up to 25 steps)
+- Multi-step task planning (up to 50 steps, configurable)
 - LLM generates PLAN → THINK → ACT → OBSERVE cycle
 - Code block detection and auto-execution
 - Tool call parsing from agent responses (TOOL: tool_name | {input})
@@ -82,94 +82,67 @@
 ## Frontend (onehands_frontend/) ✅
 - React 18 + Vite + TypeScript
 - TailwindCSS dark theme design
-- Zustand state management with persistence
+- Zustand state management with persistence (v2 store)
+- **Error Boundary**: catches crashes, shows reload button
 - **Chat Panel**: SSE streaming, markdown rendering, code highlighting, provider badges
 - **Agent Panel**: Task runner with real-time trace, step visualization, tool call display
 - **Execute Panel**: Code editor, language selector, E2B output display
 - **Memory Panel**: Memory viewer/creator with importance rating
 - **Health Panel**: Live system status, phase indicators, API key pool status
-- **Settings Panel**: Provider/model/temperature/max_tokens/system_prompt configuration
+- **Settings Panel**: 6 sub-tabs: LLM, API Keys, Agent, UI, System, About
+  - Multi-key management for all providers
+  - Agent config (max steps, auto-execute, memory)
+  - Full API key management (masked inputs with show/hide)
+- **Dev Panel**: Full Phase 9 developer workflow
+- **Connector Panel**: Universal platform connector (30+ platforms)
 - Sidebar with conversation history
 
 ## Phase 9: True Autonomous AI Developer ✅
 The agent doesn't just TALK about coding — it actually DOES it end-to-end.
 
 ### 9.1 Full-Stack Code Generator
-- Generate complete production-ready projects from natural language description
+- Generate complete production-ready projects from natural language
 - Supported stacks: `python-fastapi`, `node-express`, `react-vite`, `fullstack-python`, `fullstack-node`
 - LLM-powered architecture planning → file-by-file code generation
 - Auto-includes Dockerfile, test files, README.md
-- Python syntax validation via E2B
-- Files saved to user workspace automatically
 - Endpoints: `POST /dev/generate`, `GET /dev/stacks`
 
 ### 9.2 GitHub Developer Agent
-- Full GitHub REST API integration (via PAT token)
-- Operations: `list_repos`, `create_repo`, `get_tree`, `get_file`, `create_branch`, `commit_files`, `create_pr`, `list_prs`
-- Supports committing multiple files in one operation
-- Auto-creates PR with detailed description
+- Full GitHub REST API integration
+- Operations: list_repos, create_repo, get_tree, get_file, create_branch, commit_files, create_pr, list_prs
 - Endpoint: `POST /dev/github`
 
 ### 9.3 Async Task Queue
-- All long-running tasks (generate, test, deploy, workflow) run in background
+- All long-running tasks run in background
 - Real-time progress tracking with step-by-step log
-- Redis-augmented in-memory task store
-- Poll status with `GET /tasks/{task_id}`
-- Get full result with `GET /tasks/{task_id}/result`
-- List user's tasks with `GET /tasks`
 - Endpoints: `POST /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/result`, `GET /tasks`
 
 ### 9.4 Deploy Agent (Vercel + HuggingFace)
-- Deploy project files to **Vercel** (v13 deployment API)
-- Deploy project files to **HuggingFace Spaces** (Hub API)
-- Supports env var injection for secrets
-- Returns deployment URL immediately
+- Deploy project files to Vercel (v13 deployment API)
+- Deploy project files to HuggingFace Spaces
 - Endpoint: `POST /dev/deploy`
 
 ### 9.5 Test Runner
-- AI auto-generates pytest/jest/vitest tests from source code
-- Executes tests in E2B sandbox (isolated)
-- Returns: pass/fail counts, test output, exit code, summary
-- Supports Python (pytest) and JavaScript (basic node)
+- AI auto-generates pytest/jest tests from source code
+- Executes tests in E2B sandbox
 - Endpoint: `POST /dev/test`
 
 ### 9.6 File Workspace
-- Per-user in-memory file sandbox (persisted across requests)
-- CRUD operations on project files
-- Generated project files auto-saved here
+- Per-user in-memory file sandbox
 - Endpoints: `POST/GET /workspace/files`, `GET/DELETE /workspace/files/{filename}`
 
 ### 9.8 Code Review Agent
 - AI-powered code review (bug detection, security, performance, style)
-- Returns structured JSON: score (1-10), issues with severity, suggestions
-- Review types: `full`, `security`, `performance`, `style`
 - Endpoint: `POST /dev/review`
 
 ### 9.9 Full Developer Workflow (Generate → Test → GitHub → Deploy)
 - One-shot autonomous developer workflow
-- Step 1: Generate full project code
-- Step 2: Run tests (if Python)
-- Step 3: Push to GitHub (create branch + commit all files + open PR)
-- Step 4: Deploy to Vercel or HuggingFace
-- Returns: task_id for progress polling, full report on completion
 - Endpoint: `POST /dev/workflow`
 
 ### 9.9 Metrics Dashboard
-- Live agent capability metrics
-- Task success rates, operation counts by type
-- Uptime, recent task history
 - Endpoint: `GET /dev/metrics`
 
-## Frontend Phase 9 Panel (DevPanel) ✅
-- **Generate Tab**: Describe project → choose stack → watch files generate live
-- **GitHub Tab**: Perform GitHub operations (list/clone/commit/PR)
-- **Deploy Tab**: Deploy to Vercel or HuggingFace with one click
-- **Test Tab**: Paste code → AI generates + runs tests → see results
-- **Review Tab**: Paste code → get AI code review with issue list + score
-- **Workflow Tab**: Full end-to-end autonomous developer workflow
-- **Metrics Tab**: Live dashboard with success rates, operation counts
-- **Tasks Panel**: Real-time task progress tracker with step logs
-- **Workspace Panel**: Browse and view generated project files
+## Phase 10: Universal Connector + Real Autonomous AI Developer ✅
 
 ## Phase 10: True Autonomous AI Developer — Multi-Agent Orchestration ✅
 The system runs a TEAM of specialized agents that collaborate, delegate, and self-improve.
@@ -248,4 +221,50 @@ The system runs a TEAM of specialized agents that collaborate, delegate, and sel
 - **Bug Fix Tab**: Paste buggy code + error → autonomous fix + verify loop
 - **Consensus Tab**: Run same prompt on multiple models → see all answers + synthesis
 - **Status Tab**: Live Phase 10 dashboard with metrics and agent list
+- Connect any platform with token/API key
+- **Code/Dev**: GitHub, GitLab, HuggingFace, E2B
+- **AI Models**: OpenAI, Anthropic, Groq, OpenRouter
+- **Deploy**: Vercel, Netlify, Railway, Heroku, AWS, GCP, Azure
+- **Database**: Supabase, Firebase, MongoDB, PostgreSQL, Redis
+- **Project Mgmt**: Jira, Notion, Linear, Trello
+- **Messaging**: Slack, Discord, Telegram
+- **Design**: Figma
+- **Browser**: BrowserBase
+- **Automation**: Zapier
+- **Custom**: Any HTTP API
+- Test connectivity with one click
+- Agent can use any connected platform autonomously
+- Endpoints: `POST /connector/test`, `POST /connector/call`, `GET /connector/platforms`
 
+### 10.2 Browser Agent
+- Visit URLs and extract text/HTML/links/JSON
+- Web search via DuckDuckGo API
+- Endpoints: `POST /browser/visit`, `POST /browser/search`
+
+### 10.3 Code Intelligence Suite
+- **Explain**: Understand any code
+- **Refactor**: Improve code quality
+- **Debug**: Fix bugs with error context
+- **Document**: Generate docstrings/docs
+- **Convert**: Translate between programming languages
+- Endpoints: `POST /dev/explain`, `/dev/refactor`, `/dev/debug`, `/dev/document`, `/dev/convert`
+
+### 10.4 Collaboration Notifications
+- Send notifications to Slack/Discord/Telegram when tasks complete
+- Endpoint: `POST /collab/notify`
+
+### 10.5 Custom Tool Registry
+- Agent can register new tools dynamically
+- Tools persist in-process
+- Endpoints: `POST /agent/tools/register`, `GET /agent/tools/custom`
+
+## Frontend Phase 10: Connector Panel ✅
+- **Universal Connector** tab in header
+- Category sidebar: All, Code, AI, Deploy, Database, Project, Messaging, Design, Cloud, Automation, Custom
+- Search/filter connectors
+- Per-connector expand → fill credentials → Test & Save
+- Connected badges shown in header
+- Connected count badge on Connector tab
+- Credentials masked (show/hide toggle)
+- Per-connector status (ok/error/testing)
+- Last tested timestamp

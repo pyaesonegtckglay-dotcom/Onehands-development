@@ -1,41 +1,30 @@
 """
-Onehands AI Backend — Hugging Face Space
-==========================================
-Autonomous AI Developer Platform Backend
+Onehands Autonomous AI Developer — Backend
+HuggingFace Space: PYAE1994/openhands-genspark-agent
+Port: 7860
 
-Phase 1: Smart LLM Routing (Gemini/SambaNova/GitHub with round-robin + fallback)
-Phase 2: Persistent Conversations (Supabase PostgreSQL)
-Phase 3: Realtime Streaming (SSE + WebSocket via Redis pub/sub)
-Phase 4: Code Execution (E2B sandboxed Python)
-Phase 5: Autonomous Agent Loop (multi-step planning + tool execution)
-Phase 6: Memory System + Tool Calling + Advanced Planning
-
-Stack:
-  • FastAPI + uvicorn
-  • Supabase (PostgreSQL via asyncpg)
-  • Upstash Redis — pub/sub, SSE bridge, caching
-  • Smart API Router — multi-provider LLM with auto-heal cooldowns
-  • E2B — secure sandboxed code execution
-  • WebSocket + SSE — realtime event streaming
+All phases in one lean file:
+- Phase 1: Smart LLM Routing (Gemini/GitHub/SambaNova)
+- Phase 2: Persistent Conversations (Supabase PostgreSQL)
+- Phase 3: Realtime Streaming (SSE + WebSocket)
+- Phase 4: Code Execution (E2B + local fallback)
+- Phase 5: Autonomous Agent Loop (ReAct)
+- Phase 6: Memory System
+- Phase 7: Developer Workflow (Generate→Test→GitHub→Deploy)
+- Phase 8: Code Intelligence
 """
-
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-import httpx
-from fastapi import (
-    BackgroundTasks, Depends, FastAPI, HTTPException, Request,
-    WebSocket, WebSocketDisconnect,
-)
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -44,6 +33,7 @@ import persistence as db
 from smart_router import Provider, _to_gemini_format, router as smart_router
 import phase9
 import phase10
+import agent as ag
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,42 +42,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("onehands")
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-E2B_API_KEY = os.environ.get("E2B_API_KEY", "")
-
-ALLOWED_ORIGINS: list[str] = [
-    "https://onehands-development.vercel.app",
-    "https://onehands.vercel.app",
-    "https://pyaesonegtckglay-dotcom-onehands-development.vercel.app",
-    "https://openhands-genspark-frontend.vercel.app",
-    "https://openhands-genspark-frontend-*.vercel.app",
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:5173",
-    "*",
-]
-
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("🚀 Starting Onehands AI Developer...")
     await db.init_db()
     await db.init_redis()
     logger.info("🚀 Onehands backend ready — Phase 1-10 active")
     yield
     await db.close()
-    logger.info("🛑 Onehands backend shutdown")
+    logger.info("🛑 Onehands shutdown")
 
 # ─── App ──────────────────────────────────────────────────────────────────────
-
 app = FastAPI(
     title="Onehands AI Backend",
     description=(
         "Autonomous AI Developer platform backend: "
-        "Phase 1-9 complete — multi-provider LLM routing, code execution, "
+        "Phase 1-10 complete — multi-provider LLM routing, code execution, "
         "persistent conversations, realtime streaming, agent loop, memory system, "
         "full-stack code generation, GitHub integration, Vercel/HF deployment, "
-        "async task queue, test runner, code review, file workspace."
+        "async task queue, test runner, code review, file workspace, "
+        "multi-agent orchestration."
     ),
     version="10.0.0",
     lifespan=lifespan,
@@ -101,26 +76,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Phase 9 Router registration ─────────────────────────────────────────────
+# ─── Phase 9 + 10 Router registration ───────────────────────────────────────────
 app.include_router(phase9.router)
 app.include_router(phase10.router)
 
 # ─── WebSocket manager ────────────────────────────────────────────────────────
-
 class WSManager:
     def __init__(self):
-        self._rooms: dict[str, list[WebSocket]] = {}
+        self._rooms: Dict[str, List[WebSocket]] = {}
 
     async def connect(self, ws: WebSocket, room: str):
         await ws.accept()
         self._rooms.setdefault(room, []).append(ws)
-        logger.info("WS+ room=%s total=%d", room, len(self._rooms[room]))
 
     def disconnect(self, ws: WebSocket, room: str):
         self._rooms[room] = [c for c in self._rooms.get(room, []) if c is not ws]
 
     async def broadcast(self, room: str, data: dict):
-        dead: list[WebSocket] = []
+        dead = []
         for ws in list(self._rooms.get(room, [])):
             try:
                 await ws.send_json(data)
@@ -132,156 +105,112 @@ class WSManager:
 ws_mgr = WSManager()
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
-
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
-    message:         str
-    model:           str   = "gemini-2.0-flash"
-    provider:        str   = "gemini"
-    temperature:     float = 0.7
-    max_tokens:      int   = 4096
-    system_prompt:   Optional[str] = None
-    stream:          bool  = False
-    auto_fallback:   bool  = True
-    user_id:         str   = "anonymous"
-
-class StreamChatRequest(BaseModel):
-    conversation_id: Optional[str] = None
-    message:         str
-    model:           str   = "gemini-2.0-flash"
-    provider:        str   = "gemini"
-    temperature:     float = 0.7
-    max_tokens:      int   = 4096
-    system_prompt:   Optional[str] = None
-    user_id:         str   = "anonymous"
-
-class ExecuteRequest(BaseModel):
-    conversation_id: Optional[str] = None
-    code:            str
-    language:        str = "python"
-    timeout:         int = 30
-
-class ConversationCreate(BaseModel):
-    user_id:   str           = "anonymous"
-    title:     Optional[str] = None
-    model:     str           = "gemini-2.0-flash"
-    provider:  str           = "gemini"
-    task_type: str           = "general"
+    message: str
+    model: str = "gemini-2.0-flash"
+    provider: str = "gemini"
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    system_prompt: Optional[str] = None
+    auto_fallback: bool = True
+    user_id: str = "anonymous"
 
 class AgentTaskRequest(BaseModel):
-    task:            str
+    task: str
     conversation_id: Optional[str] = None
-    model:           str   = "gemini-2.0-flash"
-    provider:        str   = "gemini"
-    max_steps:       int   = Field(default=10, ge=1, le=25)
-    execute_code:    bool  = True
-    user_id:         str   = "anonymous"
-    use_memory:      bool  = True
-    system_prompt:   Optional[str] = None
-
-class MemoryRequest(BaseModel):
-    user_id:     str   = "anonymous"
-    content:     str
-    memory_type: str   = "fact"
-    key:         Optional[str] = None
-    importance:  float = 0.5
-    conv_id:     Optional[str] = None
-
-class ToolCallRequest(BaseModel):
-    tool_name: str
-    tool_input: dict = {}
-    conversation_id: Optional[str] = None
+    model: str = "gemini-2.0-flash"
+    provider: str = "gemini"
+    max_steps: int = Field(default=10, ge=1, le=25)
+    execute_code: bool = True
+    user_id: str = "anonymous"
+    use_memory: bool = True
+    system_prompt: Optional[str] = None
 
 class PlanRequest(BaseModel):
-    task:            str
+    task: str
+    model: str = "gemini-2.0-flash"
+    provider: str = "gemini"
+    user_id: str = "anonymous"
+
+class ExecuteRequest(BaseModel):
+    code: str
+    language: str = "python"
+    timeout: int = Field(default=30, ge=1, le=120)
     conversation_id: Optional[str] = None
-    model:           str   = "gemini-2.0-flash"
-    provider:        str   = "gemini"
-    user_id:         str   = "anonymous"
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+class ConversationCreate(BaseModel):
+    user_id: str = "anonymous"
+    title: Optional[str] = None
+    model: str = "gemini-2.0-flash"
+    provider: str = "gemini"
+    task_type: str = "general"
 
-def _build_oai_messages(system: Optional[str], history: list, user_msg: str) -> list:
-    msgs: list[dict] = []
-    if system:
-        msgs.append({"role": "system", "content": system})
-    for row in history:
-        role = row.get("role", "user")
-        if role in ("user", "assistant", "system", "tool"):
-            msgs.append({"role": role, "content": row.get("content", "")})
-    msgs.append({"role": "user", "content": user_msg})
-    return msgs
+class MemoryRequest(BaseModel):
+    user_id: str = "anonymous"
+    content: str
+    memory_type: str = "fact"
+    key: Optional[str] = None
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    conversation_id: Optional[str] = None
 
-async def _emit(conv_id: str, event: dict):
-    """Publish to Redis + broadcast via WS."""
-    await db.publish_event(conv_id, event)
-    await ws_mgr.broadcast(conv_id, event)
+class DevGenerateRequest(BaseModel):
+    description: str
+    stack: str = "python-fastapi"
+    include_tests: bool = True
+    include_dockerfile: bool = True
+    model: str = "gemini-2.0-flash"
+    provider: str = "gemini"
+    user_id: str = "anonymous"
 
-async def _llm_call(
-    provider: str,
-    model: str,
-    messages: list,
-    temperature: float,
-    max_tokens: int,
-    auto_fallback: bool = True,
-    system_prompt: Optional[str] = None,
-) -> tuple[str, str, str]:
-    """Returns (content, used_provider, used_model)."""
-    if auto_fallback:
-        result = await smart_router.auto_chat(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            preferred_provider=provider,
-            preferred_model=model,
-            system_prompt=system_prompt,
-        )
-        return result["content"], result["provider"], result["model"]
+class DevWorkflowRequest(BaseModel):
+    description: str
+    stack: str = "python-fastapi"
+    provider: str = "gemini"
+    model: str = "gemini-2.0-flash"
+    user_id: str = "anonymous"
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+    vercel_token: Optional[str] = None
+    hf_token: Optional[str] = None
+    deploy_to: Optional[str] = None
+    run_tests: bool = True
 
-    # strict provider
-    if provider == "gemini":
-        gemini_msgs = _to_gemini_format(messages)
-        r = await smart_router.call_gemini(
-            model, gemini_msgs, temperature, max_tokens,
-            system_instruction=system_prompt
-        )
-        content = r["candidates"][0]["content"]["parts"][0]["text"]
-    elif provider == "sambanova":
-        msgs = messages
-        if system_prompt:
-            msgs = [{"role": "system", "content": system_prompt}] + [m for m in messages if m.get("role") != "system"]
-        r = await smart_router.call_sambanova(model, msgs, temperature, max_tokens)
-        content = r["choices"][0]["message"]["content"]
-    elif provider == "github_llm":
-        msgs = messages
-        if system_prompt:
-            msgs = [{"role": "system", "content": system_prompt}] + [m for m in messages if m.get("role") != "system"]
-        r = await smart_router.call_github_llm(model, msgs, temperature, max_tokens)
-        content = r["choices"][0]["message"]["content"]
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
-    return content, provider, model
+class GitHubRequest(BaseModel):
+    operation: str
+    github_token: Optional[str] = None
+    repo_name: Optional[str] = None
+    repo: Optional[str] = None
+    files: Optional[Dict[str, str]] = None
+    message: Optional[str] = None
+    branch: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    head: Optional[str] = None
+    base: Optional[str] = None
+    description: Optional[str] = None
+    private: bool = False
 
-def _extract_code(text: str, language: str = "python") -> Optional[str]:
-    """Extract first code block from markdown text."""
-    patterns = [
-        rf"```{language}\n(.*?)```",
-        r"```python\n(.*?)```",
-        r"```\n(.*?)```",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, text, re.DOTALL)
-        if m:
-            return m.group(1).strip()
-    return None
+class DeployRequest(BaseModel):
+    target: str  # "vercel" | "huggingface"
+    project_name: str
+    files: Dict[str, str]
+    vercel_token: Optional[str] = None
+    hf_token: Optional[str] = None
+    space_id: Optional[str] = None
 
-def _extract_all_code_blocks(text: str) -> list[dict]:
-    """Extract all code blocks with their languages."""
-    pattern = r"```(\w*)\n(.*?)```"
-    matches = re.findall(pattern, text, re.DOTALL)
-    return [{"language": lang or "python", "code": code.strip()} for lang, code in matches]
+class CodeIntelRequest(BaseModel):
+    operation: str  # explain | refactor | debug | document | convert | review
+    code: str
+    language: str = "python"
+    context: str = ""
+    provider: str = "gemini"
+    model: str = "gemini-2.0-flash"
 
-# ─── E2B Code Execution ───────────────────────────────────────────────────────
+class AsyncTaskRequest(BaseModel):
+    task_type: str
+    payload: Dict[str, Any] = {}
+    user_id: str = "anonymous"
 
 async def _e2b_run(code: str, language: str, timeout: int) -> dict:
     if not E2B_API_KEY:
@@ -493,7 +422,12 @@ print(f"File created: /tmp/{filename} ({len(content)} bytes)")
     return result
 
 # ─── Routes: root / health ────────────────────────────────────────────────────
+class WorkspaceFileRequest(BaseModel):
+    filename: str
+    content: str
+    user_id: str = "anonymous"
 
+# ─── Root & Health ─────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {
@@ -521,14 +455,35 @@ async def root():
             "/p10/agents", "/p10/agent-memory", "/p10/stream-code",
             "/p10/status", "/p10/workspace-search",
         ],
+        "service": "Onehands Autonomous AI Developer",
+        "version": "12.0.0",
+        "status": "running",
+        "phases": {
+            "phase_1": "Smart LLM Routing ✅",
+            "phase_2": "Persistent Conversations ✅",
+            "phase_3": "Realtime Streaming ✅",
+            "phase_4": "Code Execution (E2B) ✅",
+            "phase_5": "ReAct Agent Loop ✅",
+            "phase_6": "Memory System ✅",
+            "phase_7": "Dev Workflow ✅",
+            "phase_8": "Code Intelligence ✅",
+        },
+        "providers": smart_router.health(),
+        "db": "connected" if db.is_db_ok() else "fallback",
+        "redis": "connected" if db.is_redis_ok() else "disabled",
+        "e2b": "configured" if ag.E2B_API_KEY else "not_configured",
     }
 
 @app.get("/health")
 async def health():
-    redis_ok = await db.redis_ping()
-    db_ok = db.db_connected()
-    github_ok = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT", ""))
-    p9_metrics = phase9._metrics
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory().percent
+    except Exception:
+        cpu = 0.0
+        mem = 0.0
+
     return {
         "status":       "ok" if (db_ok and redis_ok) else ("partial" if (db_ok or redis_ok) else "degraded"),
         "version":      "9.0.0",
@@ -571,6 +526,13 @@ async def health():
             "reviews_done":     p9_metrics["reviews_done"],
         },
         "timestamp":    time.time(),
+        "status": "healthy",
+        "db": db.is_db_ok(),
+        "redis": db.is_redis_ok(),
+        "e2b": bool(ag.E2B_API_KEY),
+        "providers": smart_router.health(),
+        "system": {"cpu_percent": cpu, "memory_percent": mem},
+        "timestamp": time.time(),
     }
 
 @app.get("/health/keys")
@@ -579,732 +541,441 @@ async def health_keys():
 
 @app.post("/health/reload-keys")
 async def reload_keys():
-    smart_router._reload_keys()
+    smart_router.reload_keys()
     return {"status": "reloaded", "health": smart_router.health()}
-
-# ─── Conversations ────────────────────────────────────────────────────────────
-
-@app.post("/conversations", status_code=201)
-async def create_conversation(data: ConversationCreate):
-    row = await db.create_conversation(
-        user_id=data.user_id,
-        title=data.title or "New conversation",
-        model=data.model,
-        provider=data.provider,
-        task_type=data.task_type,
-    )
-    if not row:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    return row
-
-@app.get("/conversations")
-async def list_conversations(user_id: str = "anonymous"):
-    return await db.list_conversations(user_id)
-
-@app.get("/conversations/{conv_id}")
-async def get_conversation(conv_id: str):
-    row = await db.get_conversation(conv_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return row
-
-@app.get("/conversations/{conv_id}/messages")
-async def get_messages(conv_id: str):
-    return await db.get_conversation_messages(conv_id)
-
-@app.get("/conversations/{conv_id}/executions")
-async def get_executions(conv_id: str):
-    return await db.get_executions(conv_id)
-
-@app.get("/conversations/{conv_id}/tool-calls")
-async def get_tool_calls(conv_id: str):
-    return await db.get_tool_calls(conv_id)
-
-@app.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: str):
-    ok = await db.delete_conversation(conv_id)
-    return {"deleted": ok}
-
-# ─── Chat ─────────────────────────────────────────────────────────────────────
-
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    # Ensure conversation
-    conv_id = req.conversation_id
-    if not conv_id:
-        row = await db.create_conversation(
-            user_id=req.user_id,
-            title=req.message[:60],
-            model=req.model,
-            provider=req.provider,
-        )
-        conv_id = str(row["id"]) if row else str(uuid.uuid4())
-
-    # History
-    history = await db.get_conversation_messages(conv_id)
-    messages = _build_oai_messages(req.system_prompt, history, req.message)
-
-    # Save user msg
-    await db.save_message(conv_id, "user", req.message)
-
-    try:
-        content, used_provider, used_model = await _llm_call(
-            provider=req.provider,
-            model=req.model,
-            messages=messages,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            auto_fallback=req.auto_fallback,
-            system_prompt=req.system_prompt,
-        )
-    except Exception as e:
-        logger.error("chat error: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
-
-    # Save & emit
-    msg_id = await db.save_message(conv_id, "assistant", content, used_provider, used_model)
-    await _emit(conv_id, {"type": "message", "role": "assistant", "content": content})
-
-    return {
-        "conv_id":  conv_id,
-        "msg_id":   msg_id,
-        "role":     "assistant",
-        "content":  content,
-        "model":    used_model,
-        "provider": used_provider,
-    }
-
-# ─── Streaming chat ───────────────────────────────────────────────────────────
-
-@app.post("/chat/stream")
-async def chat_stream(req: StreamChatRequest):
-    """SSE streaming chat endpoint."""
-    conv_id = req.conversation_id
-    if not conv_id:
-        row = await db.create_conversation(
-            user_id=req.user_id,
-            title=req.message[:60], model=req.model, provider=req.provider
-        )
-        conv_id = str(row["id"]) if row else str(uuid.uuid4())
-
-    history  = await db.get_conversation_messages(conv_id)
-    messages = _build_oai_messages(req.system_prompt, history, req.message)
-    await db.save_message(conv_id, "user", req.message)
-
-    async def event_gen() -> AsyncGenerator[str, None]:
-        full_text = ""
-        used_provider = req.provider
-        used_model = req.model
-
-        # Emit start event
-        yield f"data: {json.dumps({'type': 'start', 'conv_id': conv_id})}\\n\\n"
-
-        try:
-            if req.provider == "gemini":
-                gemini_msgs = _to_gemini_format(messages)
-                gen = smart_router.stream_gemini(
-                    req.model, gemini_msgs,
-                    req.temperature, req.max_tokens,
-                )
-            elif req.provider == "sambanova":
-                gen = smart_router.stream_sambanova(
-                    req.model, messages, req.temperature, req.max_tokens
-                )
-            elif req.provider == "github_llm":
-                gen = smart_router.stream_github_llm(
-                    req.model, messages, req.temperature, req.max_tokens
-                )
-            else:
-                yield f"data: {json.dumps({'error': f'Unknown provider: {req.provider}'})}\\n\\n"
-                return
-
-            async for chunk in gen:
-                full_text += chunk
-                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk, 'conv_id': conv_id})}\\n\\n"
-
-        except Exception as e:
-            logger.warning("stream error, falling back to non-streaming: %s", e)
-            # fallback to non-streaming with auto_fallback
-            try:
-                content, used_provider, used_model = await _llm_call(
-                    provider=req.provider, model=req.model,
-                    messages=messages, temperature=req.temperature,
-                    max_tokens=req.max_tokens, auto_fallback=True,
-                    system_prompt=req.system_prompt,
-                )
-                full_text = content
-                # Stream it word-by-word for UX
-                words = content.split(" ")
-                for i, word in enumerate(words):
-                    chunk = word + (" " if i < len(words)-1 else "")
-                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk, 'conv_id': conv_id})}\\n\\n"
-                    if i % 5 == 0:
-                        await asyncio.sleep(0.01)
-            except Exception as e2:
-                yield f"data: {json.dumps({'type': 'error', 'error': str(e2)})}\\n\\n"
-                return
-
-        await db.save_message(conv_id, "assistant", full_text, used_provider, used_model)
-        await _emit(conv_id, {"type": "done", "conv_id": conv_id, "content": full_text})
-        yield f"data: {json.dumps({'type': 'done', 'conv_id': conv_id, 'provider': used_provider, 'model': used_model})}\\n\\n"
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-# ─── SSE subscribe ────────────────────────────────────────────────────────────
-
-@app.get("/chat/stream/{conv_id}")
-async def sse_subscribe(conv_id: str, request: Request):
-    """Subscribe to events for a conversation room via SSE."""
-    async def gen() -> AsyncGenerator[str, None]:
-        redis = db.get_redis()
-        if not redis:
-            yield 'data: {"error":"Redis not available"}\\n\\n'
-            return
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(f"room:{conv_id}")
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if msg and msg["type"] == "message":
-                    yield f"data: {msg['data']}\\n\\n"
-                else:
-                    yield ": keepalive\\n\\n"
-                await asyncio.sleep(0.05)
-        finally:
-            await pubsub.unsubscribe(f"room:{conv_id}")
-            await pubsub.aclose()
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-# ─── WebSocket ────────────────────────────────────────────────────────────────
-
-@app.websocket("/ws/{room}")
-async def websocket_ep(ws: WebSocket, room: str):
-    await ws_mgr.connect(ws, room)
-    try:
-        while True:
-            data = await ws.receive_text()
-            try:
-                msg = json.loads(data)
-            except Exception:
-                msg = {"raw": data}
-
-            # Handle chat messages via WebSocket
-            if msg.get("type") == "chat":
-                conv_id = msg.get("conv_id", room)
-                user_msg = msg.get("message", "")
-                model = msg.get("model", "gemini-2.0-flash")
-                provider = msg.get("provider", "gemini")
-
-                await ws_mgr.broadcast(room, {"type": "ack", "conv_id": conv_id})
-
-                try:
-                    history = await db.get_conversation_messages(conv_id)
-                    messages = _build_oai_messages(None, history, user_msg)
-                    await db.save_message(conv_id, "user", user_msg)
-
-                    content, used_provider, used_model = await _llm_call(
-                        provider=provider, model=model,
-                        messages=messages, temperature=0.7,
-                        max_tokens=2048, auto_fallback=True,
-                    )
-                    await db.save_message(conv_id, "assistant", content, used_provider, used_model)
-                    await ws_mgr.broadcast(room, {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content,
-                        "conv_id": conv_id,
-                        "provider": used_provider,
-                        "model": used_model,
-                    })
-                except Exception as e:
-                    await ws_mgr.broadcast(room, {"type": "error", "error": str(e)})
-            else:
-                await ws_mgr.broadcast(room, msg)
-
-    except WebSocketDisconnect:
-        ws_mgr.disconnect(ws, room)
-    except Exception as e:
-        logger.error("WS error room=%s: %s", room, e)
-        ws_mgr.disconnect(ws, room)
-
-# ─── Code Execution (E2B) ─────────────────────────────────────────────────────
-
-@app.post("/execute")
-async def execute_code(req: ExecuteRequest):
-    result = await _e2b_run(req.code, req.language, req.timeout)
-    if req.conversation_id:
-        await db.save_execution(
-            req.conversation_id, req.language, req.code,
-            result["output"], result["error"],
-            result["exit_code"], result["duration_ms"],
-        )
-        await _emit(req.conversation_id, {"type": "execution", **result})
-    return result
-
-# ─── Tools ────────────────────────────────────────────────────────────────────
-
-@app.get("/tools")
-async def list_tools():
-    """Phase 6: List available tools."""
-    return {
-        "tools": [
-            {"name": name, **info}
-            for name, info in BUILTIN_TOOLS.items()
-        ]
-    }
-
-@app.post("/tools/execute")
-async def execute_tool(req: ToolCallRequest, request: Request):
-    """Phase 6: Execute a specific tool."""
-    user_id = request.headers.get("X-User-ID", "anonymous")
-    result = await _execute_tool(req.tool_name, req.tool_input, req.conversation_id, user_id)
-
-    if req.conversation_id:
-        await db.save_tool_call(
-            req.conversation_id, None, req.tool_name,
-            req.tool_input, result.get("output", ""),
-            result.get("status", "success"), result.get("duration_ms", 0)
-        )
-        await _emit(req.conversation_id, {"type": "tool_result", **result})
-
-    return result
-
-# ─── Memory System ────────────────────────────────────────────────────────────
-
-@app.post("/memory")
-async def save_memory(req: MemoryRequest):
-    """Phase 6: Save a memory."""
-    ok = await db.save_memory(
-        req.user_id, req.content, req.conv_id,
-        req.memory_type, req.key, req.importance
-    )
-    return {"saved": ok, "content": req.content[:100]}
-
-@app.get("/memory")
-async def get_memory(
-    user_id: str = "anonymous",
-    conv_id: Optional[str] = None,
-    memory_type: Optional[str] = None,
-    limit: int = 20,
-):
-    """Phase 6: Retrieve memories."""
-    memories = await db.get_memories(user_id, conv_id, memory_type, limit)
-    return {"memories": memories, "count": len(memories)}
-
-@app.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: str):
-    """Phase 6: Delete a memory."""
-    if not db.get_db():
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    try:
-        async with db.get_db().acquire() as conn:
-            await conn.execute("DELETE FROM agent_memory WHERE id=$1", memory_id)
-        return {"deleted": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ─── Agent Planning ───────────────────────────────────────────────────────────
-
-PLANNER_SYSTEM = """You are an expert AI planning assistant for the Onehands autonomous agent.
-
-Given a task, create a detailed step-by-step execution plan.
-Return your plan as a JSON object with this exact structure:
-{
-  "task_summary": "brief summary of the task",
-  "estimated_steps": 5,
-  "complexity": "low|medium|high",
-  "requires_code": true/false,
-  "requires_web": false,
-  "steps": [
-    {
-      "step": 1,
-      "action": "search|execute_python|reason|write_memory|read_url|create_file|respond",
-      "description": "what to do in this step",
-      "input": "what input is needed",
-      "expected_output": "what output is expected"
-    }
-  ]
-}
-
-Be precise and actionable. Each step should be atomic and measurable."""
-
-@app.post("/agent/plan")
-async def create_agent_plan(req: PlanRequest):
-    """Phase 5+6: Create a detailed execution plan for a task."""
-    messages = [
-        {"role": "user", "content": f"Create a detailed execution plan for this task:\n\n{req.task}"}
-    ]
-
-    try:
-        content, used_provider, used_model = await _llm_call(
-            provider=req.provider,
-            model=req.model,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=2048,
-            auto_fallback=True,
-            system_prompt=PLANNER_SYSTEM,
-        )
-
-        # Try to parse JSON from response
-        plan_data = {}
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                plan_data = json.loads(json_match.group())
-            except Exception:
-                plan_data = {"task_summary": req.task, "steps": [{"step": 1, "description": content}]}
-        else:
-            plan_data = {"task_summary": req.task, "raw_plan": content}
-
-        # Save plan to DB
-        plan_id = None
-        if req.conversation_id:
-            plan_id = await db.create_plan(
-                req.conversation_id, req.task,
-                plan_data.get("steps", [])
-            )
-
-        return {
-            "plan_id":   plan_id,
-            "task":      req.task,
-            "plan":      plan_data,
-            "provider":  used_provider,
-            "model":     used_model,
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-# ─── Agent Loop ───────────────────────────────────────────────────────────────
-
-AGENT_SYSTEM = """You are Onehands — an autonomous AI developer agent.
-
-You have access to the following tools:
-- execute_python(code): Run Python code in a secure sandbox
-- web_search(query): Search the web
-- read_url(url): Fetch content from a URL
-- write_memory(content, key): Store information
-- recall_memory(query): Retrieve stored info
-- create_file(filename, content): Create files
-
-Given a task, you:
-1. PLAN: Break it into numbered steps
-2. THINK: Reason about each step
-3. ACT: Call a tool if needed — use format: TOOL: tool_name | {"param": "value"}
-4. OBSERVE: Process tool output
-5. REPEAT: Until task is complete
-6. FINISH: End with FINAL ANSWER: <your answer>
-
-Response format for each step:
-STEP N: <description>
-THOUGHT: <reasoning>
-ACTION: TOOL: tool_name | {"param": "value"}   (or "none" if no tool needed)
-OBSERVATION: <tool output will be inserted here>
-...
-FINAL ANSWER: <complete answer to the task>"""
-
-@app.post("/agent/task")
-async def agent_task(req: AgentTaskRequest):
-    """
-    Phase 5+6: Autonomous agent loop:
-    1. Create/use conversation
-    2. LLM plans & executes step-by-step
-    3. Tool calls executed and results fed back
-    4. Memory stored/retrieved
-    5. Returns full trace
-    """
-    conv_id = req.conversation_id
-    if not conv_id:
-        row = await db.create_conversation(
-            user_id=req.user_id,
-            title=f"Agent: {req.task[:50]}",
-            model=req.model,
-            provider=req.provider,
-            task_type="agent",
-        )
-        conv_id = str(row["id"]) if row else str(uuid.uuid4())
-
-    await db.save_message(conv_id, "user", req.task)
-    await _emit(conv_id, {"type": "agent_start", "task": req.task, "conv_id": conv_id})
-
-    # Load relevant memories
-    memory_context = ""
-    if req.use_memory:
-        memories = await db.get_memories(req.user_id, conv_id, limit=5)
-        if memories:
-            mem_texts = [f"- {m['content']}" for m in memories]
-            memory_context = "\n\nRelevant memories:\n" + "\n".join(mem_texts)
-
-    system_prompt = req.system_prompt or AGENT_SYSTEM
-    if memory_context:
-        system_prompt += memory_context
-
-    messages: list[dict] = [
-        {"role": "user", "content": f"TASK: {req.task}"},
-    ]
-
-    trace: list[dict] = []
-    step = 0
-    final_answer = ""
-
-    while step < req.max_steps:
-        step += 1
-        logger.info("Agent step %d/%d  conv=%s", step, req.max_steps, conv_id)
-
-        # LLM call
-        try:
-            content, used_provider, used_model = await _llm_call(
-                provider=req.provider,
-                model=req.model,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=2048,
-                auto_fallback=True,
-                system_prompt=system_prompt,
-            )
-        except Exception as e:
-            error_msg = f"LLM failed at step {step}: {e}"
-            trace.append({"step": step, "type": "error", "content": error_msg})
-            await _emit(conv_id, {"type": "agent_error", "step": step, "error": error_msg})
-            break
-
-        messages.append({"role": "assistant", "content": content})
-        msg_id = await db.save_message(conv_id, "assistant", content, used_provider, used_model)
-
-        await _emit(conv_id, {
-            "type":     "agent_step",
-            "step":     step,
-            "content":  content,
-            "provider": used_provider,
-            "model":    used_model,
-        })
-        trace.append({"step": step, "type": "thought", "content": content})
-
-        # Check for FINAL ANSWER
-        final_match = re.search(r"FINAL ANSWER:\s*(.*?)(?:\n\n|\Z)", content, re.DOTALL)
-        if final_match:
-            final_answer = final_match.group(1).strip()
-            trace.append({"step": step, "type": "final_answer", "content": final_answer})
-            break
-
-        # Parse tool calls from content
-        tool_called = False
-        tool_pattern = r"(?:ACTION:|TOOL:)\s*(?:TOOL:\s*)?(\w+)\s*\|\s*(\{.*?\})"
-        tool_matches = re.findall(tool_pattern, content, re.DOTALL)
-
-        for tool_name, tool_input_str in tool_matches:
-            try:
-                tool_input = json.loads(tool_input_str)
-            except Exception:
-                tool_input = {"raw": tool_input_str}
-
-            logger.info("Agent tool call: %s  input=%s", tool_name, tool_input)
-            await _emit(conv_id, {
-                "type": "tool_call",
-                "step": step,
-                "tool": tool_name,
-                "input": tool_input,
-            })
-
-            tool_result = await _execute_tool(tool_name, tool_input, conv_id, req.user_id)
-            tool_called = True
-
-            # Save tool call to DB
-            await db.save_tool_call(
-                conv_id, msg_id, tool_name,
-                tool_input, tool_result.get("output", ""),
-                tool_result.get("status", "success"),
-                tool_result.get("duration_ms", 0),
-            )
-
-            await _emit(conv_id, {
-                "type":   "tool_result",
-                "step":   step,
-                "tool":   tool_name,
-                "output": tool_result.get("output", ""),
-                "error":  tool_result.get("error", ""),
-                "status": tool_result.get("status", "success"),
-            })
-
-            trace.append({
-                "step":   step,
-                "type":   "tool_call",
-                "tool":   tool_name,
-                "input":  tool_input,
-                "output": tool_result.get("output", ""),
-                "status": tool_result.get("status"),
-            })
-
-            # Feed tool result back to LLM
-            obs = f"OBSERVATION: Tool {tool_name} result:\nOutput: {tool_result.get('output', 'No output')}"
-            if tool_result.get("error"):
-                obs += f"\nError: {tool_result['error']}"
-            messages.append({"role": "user", "content": obs})
-
-        # Execute standalone code blocks (Phase 4)
-        if req.execute_code and not tool_called:
-            code_blocks = _extract_all_code_blocks(content)
-            for block in code_blocks[:2]:  # Max 2 blocks per step
-                lang = block["language"]
-                code = block["code"]
-                if len(code) < 5:
-                    continue
-
-                exec_result = await _e2b_run(code, lang, 30)
-                await db.save_execution(
-                    conv_id, lang, code,
-                    exec_result["output"], exec_result["error"],
-                    exec_result["exit_code"], exec_result["duration_ms"],
-                )
-                await _emit(conv_id, {
-                    "type": "agent_execution",
-                    "step": step,
-                    **exec_result,
-                })
-                trace.append({"step": step, "type": "execution", **exec_result})
-
-                # Feed result back
-                obs = f"[Code execution result]\noutput: {exec_result['output']}\nerror: {exec_result['error']}\nexit_code: {exec_result['exit_code']}"
-                messages.append({"role": "user", "content": obs})
-
-        # Check if done via keywords
-        done_keywords = (
-            "final answer", "task complete", "task completed",
-            "i have completed", "done.", "finished.", "complete.",
-            "## summary", "## result"
-        )
-        if any(kw in content.lower() for kw in done_keywords) and not final_answer:
-            final_answer = content
-            break
-
-    # Auto-save important result to memory
-    if final_answer and req.use_memory:
-        await db.save_memory(
-            req.user_id, f"Task: {req.task[:100]} → Result: {final_answer[:200]}",
-            conv_id, "task_result", importance=0.8
-        )
-
-    await _emit(conv_id, {
-        "type": "agent_done",
-        "steps": step,
-        "conv_id": conv_id,
-        "final_answer": final_answer,
-    })
-
-    return {
-        "conv_id":      conv_id,
-        "task":         req.task,
-        "steps":        step,
-        "final_answer": final_answer,
-        "trace":        trace,
-    }
-
-# ─── Models ───────────────────────────────────────────────────────────────────
 
 @app.get("/models")
 async def list_models():
     return {
-        "gemini": [
-            {"id": "gemini-2.0-flash",              "name": "Gemini 2.0 Flash",          "context": 1048576, "free": True},
-            {"id": "gemini-2.0-flash-thinking-exp", "name": "Gemini 2.0 Flash Thinking", "context": 32768,   "free": True},
-            {"id": "gemini-1.5-pro",                "name": "Gemini 1.5 Pro",            "context": 2097152, "free": True},
-            {"id": "gemini-1.5-flash",              "name": "Gemini 1.5 Flash",          "context": 1048576, "free": True},
-            {"id": "gemini-2.5-flash-preview-05-20","name": "Gemini 2.5 Flash Preview",  "context": 1048576, "free": True},
-        ],
-        "sambanova": [
-            {"id": "Meta-Llama-3.3-70B-Instruct",  "name": "Llama 3.3 70B",    "context": 131072},
-            {"id": "Meta-Llama-3.1-405B-Instruct", "name": "Llama 3.1 405B",   "context": 16384},
-            {"id": "DeepSeek-R1",                  "name": "DeepSeek R1",       "context": 32768},
-            {"id": "Qwen2.5-72B-Instruct",         "name": "Qwen 2.5 72B",     "context": 32768},
-            {"id": "Qwen3-32B",                    "name": "Qwen 3 32B",        "context": 131072},
-        ],
-        "github_llm": [
-            {"id": "gpt-4o",                          "name": "GPT-4o",                   "context": 128000},
-            {"id": "gpt-4o-mini",                     "name": "GPT-4o Mini",              "context": 128000},
-            {"id": "Meta-Llama-3.1-70B-Instruct",     "name": "Llama 3.1 70B (GitHub)",   "context": 131072},
-            {"id": "Mistral-large-2407",              "name": "Mistral Large",             "context": 131072},
-            {"id": "DeepSeek-R1",                     "name": "DeepSeek R1 (GitHub)",      "context": 65536},
-        ],
+        "models": [
+            {"provider": "gemini", "model": "gemini-2.0-flash", "description": "Google Gemini 2.0 Flash"},
+            {"provider": "gemini", "model": "gemini-1.5-pro", "description": "Google Gemini 1.5 Pro"},
+            {"provider": "github", "model": "gpt-4o-mini", "description": "OpenAI GPT-4o Mini via GitHub"},
+            {"provider": "github", "model": "gpt-4o", "description": "OpenAI GPT-4o via GitHub"},
+            {"provider": "sambanova", "model": "Meta-Llama-3.1-8B-Instruct", "description": "Meta Llama 3.1 8B"},
+            {"provider": "sambanova", "model": "Meta-Llama-3.1-70B-Instruct", "description": "Meta Llama 3.1 70B"},
+        ]
     }
 
-# ─── Entry ────────────────────────────────────────────────────────────────────
+# ─── Conversations ──────────────────────────────────────────────────────────
+@app.post("/conversations", status_code=201)
+async def create_conversation(req: ConversationCreate):
+    conv = await db.create_conversation(
+        user_id=req.user_id,
+        title=req.title,
+        model=req.model,
+        provider=req.provider,
+        task_type=req.task_type,
+    )
+    return conv
 
-@app.post("/debug/reconnect")
-async def debug_reconnect():
-    """Force reconnect to DB and Redis — useful after secrets are updated."""
-    import os, traceback as tb
-    from urllib.parse import quote_plus, unquote
-    db_error = None
-    redis_error = None
+@app.get("/conversations")
+async def list_conversations(user_id: str = "anonymous"):
+    return {"conversations": await db.list_conversations(user_id)}
 
-    # Try DB connect with detailed error capture
-    db_result = False
-    try:
-        db_result = await db.init_db()
-    except Exception as e:
-        db_error = str(e)
+@app.get("/conversations/{conv_id}")
+async def get_conversation(conv_id: str):
+    conv = await db.get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    return conv
 
-    # Try Redis connect
-    redis_result = False
-    try:
-        redis_result = await db.init_redis()
-    except Exception as e:
-        redis_error = str(e)
+@app.get("/conversations/{conv_id}/messages")
+async def get_messages(conv_id: str):
+    return {"messages": await db.get_messages(conv_id)}
 
-    # Show the decoded DB URL (masked) for debugging
-    raw_url = os.environ.get("DATABASE_URL", "")
-    db_url_info = "not_set"
-    if raw_url:
-        try:
-            rest = raw_url.split("://", 1)[1]
-            last_at = rest.rfind("@")
-            host_part = rest[last_at+1:] if last_at >= 0 else "parse_error"
-            db_url_info = f"***@{host_part}"
-        except Exception:
-            db_url_info = "parse_error"
+@app.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str):
+    await db.delete_conversation(conv_id)
+    return {"status": "deleted"}
+
+# ─── Chat ───────────────────────────────────────────────────────────────────
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    # Get conversation history
+    history = []
+    if req.conversation_id:
+        msgs = await db.get_messages(req.conversation_id, limit=20)
+        history = [{"role": m["role"], "content": m["content"]} for m in msgs]
+
+    messages = history + [{"role": "user", "content": req.message}]
+
+    result = await smart_router.auto_chat(
+        messages=messages,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+        preferred_provider=req.provider,
+        preferred_model=req.model,
+        system_prompt=req.system_prompt,
+    )
+
+    # Save messages
+    if req.conversation_id:
+        await db.save_message(req.conversation_id, "user", req.message)
+        await db.save_message(
+            req.conversation_id, "assistant", result["content"],
+            provider=result["provider"], model=result["model"]
+        )
 
     return {
-        "db_reconnect": "success" if db_result else "failed",
-        "redis_reconnect": "success" if redis_result else "failed",
-        "db_connected": db.db_connected(),
-        "redis_connected": db.redis_connected(),
-        "db_error": db_error,
-        "redis_error": redis_error,
-        "db_url_debug": db_url_info,
+        "content": result["content"],
+        "provider": result["provider"],
+        "model": result["model"],
+        "conversation_id": req.conversation_id,
     }
 
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    history = []
+    if req.conversation_id:
+        msgs = await db.get_messages(req.conversation_id, limit=20)
+        history = [{"role": m["role"], "content": m["content"]} for m in msgs]
 
+    messages = history + [{"role": "user", "content": req.message}]
+    full_response = []
+
+    async def event_generator():
+        nonlocal full_response
+        try:
+            async for chunk in smart_router.auto_stream(
+                messages=messages,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                preferred_provider=req.provider,
+                preferred_model=req.model,
+                system_prompt=req.system_prompt,
+            ):
+                full_response.append(chunk)
+                data = json.dumps({"type": "token", "content": chunk})
+                yield f"data: {data}\n\n"
+
+            # Save to DB after streaming
+            if req.conversation_id:
+                full_text = "".join(full_response)
+                await db.save_message(req.conversation_id, "user", req.message)
+                await db.save_message(req.conversation_id, "assistant", full_text,
+                                     provider=req.provider, model=req.model)
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+# ─── WebSocket ───────────────────────────────────────────────────────────────
+@app.websocket("/ws/{room}")
+async def websocket_endpoint(ws: WebSocket, room: str):
+    await ws_mgr.connect(ws, room)
+    try:
+        while True:
+            data = await ws.receive_json()
+            await ws_mgr.broadcast(room, data)
+    except WebSocketDisconnect:
+        ws_mgr.disconnect(ws, room)
+    except Exception as e:
+        logger.warning(f"WebSocket error room={room}: {e}")
+        ws_mgr.disconnect(ws, room)
+
+# ─── Code Execution ──────────────────────────────────────────────────────────
+@app.post("/execute")
+async def execute_code(req: ExecuteRequest):
+    result = await ag.execute_code(
+        req.code, req.language, req.timeout, req.conversation_id
+    )
+    return result
+
+# ─── Agent ───────────────────────────────────────────────────────────────────
+@app.post("/agent/task")
+async def agent_task(req: AgentTaskRequest, background_tasks: BackgroundTasks):
+    result = await ag.run_agent(
+        task=req.task,
+        user_id=req.user_id,
+        conv_id=req.conversation_id,
+        model=req.model,
+        provider=req.provider,
+        max_steps=req.max_steps,
+        execute_code_flag=req.execute_code,
+        use_memory=req.use_memory,
+        system_prompt=req.system_prompt,
+    )
+    # Save final answer to conversation if given
+    if req.conversation_id and result.get("final_answer"):
+        await db.save_message(req.conversation_id, "user", req.task)
+        await db.save_message(
+            req.conversation_id, "assistant",
+            result["final_answer"],
+            provider=req.provider, model=req.model
+        )
+    return result
+
+@app.post("/agent/plan")
+async def agent_plan(req: PlanRequest):
+    return await ag.generate_plan(
+        task=req.task,
+        provider=req.provider,
+        model=req.model,
+        user_id=req.user_id,
+    )
+
+# ─── Memory ───────────────────────────────────────────────────────────────────
+@app.post("/memory")
+async def save_memory(req: MemoryRequest):
+    mem = await db.save_memory(
+        req.user_id, req.content, req.memory_type,
+        req.key, req.importance, req.conversation_id
+    )
+    return mem
+
+@app.get("/memory")
+async def get_memory(user_id: str = "anonymous", limit: int = 10):
+    mems = await db.get_memories(user_id, limit)
+    return {"memories": mems}
+
+# ─── Tools ────────────────────────────────────────────────────────────────────
+@app.get("/tools")
+async def list_tools():
+    return {"tools": ag.TOOL_SCHEMAS}
+
+@app.post("/tools/execute")
+async def execute_tool(req: dict):
+    tool_name = req.get("tool_name", "")
+    tool_input = req.get("tool_input", {})
+    user_id = req.get("user_id", "anonymous")
+    result = await ag._run_tool(tool_name, tool_input, user_id, None)
+    return {"tool": tool_name, "result": result}
+
+# ─── Developer: Code Generation ──────────────────────────────────────────────
+@app.post("/dev/generate")
+async def dev_generate(req: DevGenerateRequest, background_tasks: BackgroundTasks):
+    task = dev.new_task(req.user_id, "generate", req.description[:80])
+    task_id = task["task_id"]
+    dev.update_task(task_id, status="running")
+
+    async def _run():
+        try:
+            result = await dev.generate_project(
+                description=req.description,
+                stack=req.stack,
+                include_tests=req.include_tests,
+                include_dockerfile=req.include_dockerfile,
+                provider=req.provider,
+                model=req.model,
+                user_id=req.user_id,
+                task_id=task_id,
+            )
+            dev.update_task(task_id, status="completed", progress=100, result=result)
+        except Exception as e:
+            dev.update_task(task_id, status="failed", error=str(e))
+
+    background_tasks.add_task(_run)
+    return {"task_id": task_id, "status": "started"}
+
+@app.get("/dev/stacks")
+async def dev_stacks():
+    return {
+        "stacks": [
+            {"id": k, "name": v["name"], "run_cmd": v["run_cmd"]}
+            for k, v in dev.STACK_CONFIGS.items()
+        ]
+    }
+
+# ─── Developer: GitHub Operations ────────────────────────────────────────────
+@app.post("/dev/github")
+async def dev_github(req: GitHubRequest):
+    kwargs = req.model_dump(exclude={"operation", "github_token"})
+    result = await dev.github_op(req.operation, github_token=req.github_token, **kwargs)
+    return result
+
+# ─── Developer: Deploy ────────────────────────────────────────────────────────
+@app.post("/dev/deploy")
+async def dev_deploy(req: DeployRequest):
+    if req.target == "vercel":
+        return await dev.deploy_to_vercel(
+            req.project_name, req.files, vercel_token=req.vercel_token
+        )
+    elif req.target == "huggingface":
+        space_id = req.space_id or f"user/{req.project_name}"
+        return await dev.deploy_to_huggingface(
+            space_id, req.files, hf_token=req.hf_token
+        )
+    raise HTTPException(400, f"Unknown deploy target: {req.target}")
+
+# ─── Developer: Full Workflow ─────────────────────────────────────────────────
+@app.post("/dev/workflow")
+async def dev_workflow(req: DevWorkflowRequest, background_tasks: BackgroundTasks):
+    task = dev.new_task(req.user_id, "workflow", req.description[:80])
+    task_id = task["task_id"]
+    dev.update_task(task_id, status="running")
+
+    async def _run():
+        try:
+            result = await dev.run_dev_workflow(
+                description=req.description,
+                stack=req.stack,
+                provider=req.provider,
+                model=req.model,
+                user_id=req.user_id,
+                github_token=req.github_token,
+                github_repo=req.github_repo,
+                vercel_token=req.vercel_token,
+                hf_token=req.hf_token,
+                deploy_to=req.deploy_to,
+                run_tests=req.run_tests,
+                task_id=task_id,
+            )
+            dev.update_task(task_id, status="completed", progress=100, result=result)
+        except Exception as e:
+            dev.update_task(task_id, status="failed", error=str(e))
+
+    background_tasks.add_task(_run)
+    return {"task_id": task_id, "status": "started", "message": "Workflow started in background"}
+
+# ─── Developer: Code Intelligence ─────────────────────────────────────────────
+@app.post("/dev/explain")
+async def dev_explain(req: CodeIntelRequest):
+    return await dev.code_intelligence("explain", req.code, req.language, req.context, req.provider, req.model)
+
+@app.post("/dev/refactor")
+async def dev_refactor(req: CodeIntelRequest):
+    return await dev.code_intelligence("refactor", req.code, req.language, req.context, req.provider, req.model)
+
+@app.post("/dev/debug")
+async def dev_debug(req: CodeIntelRequest):
+    return await dev.code_intelligence("debug", req.code, req.language, req.context, req.provider, req.model)
+
+@app.post("/dev/document")
+async def dev_document(req: CodeIntelRequest):
+    return await dev.code_intelligence("document", req.code, req.language, req.context, req.provider, req.model)
+
+@app.post("/dev/convert")
+async def dev_convert(req: CodeIntelRequest):
+    return await dev.code_intelligence("convert", req.code, req.language, req.context, req.provider, req.model)
+
+@app.post("/dev/review")
+async def dev_review(req: CodeIntelRequest):
+    return await dev.code_intelligence("review", req.code, req.language, req.context, req.provider, req.model)
+
+@app.get("/dev/metrics")
+async def dev_metrics():
+    all_tasks = list(dev._tasks.values())
+    completed = [t for t in all_tasks if t["status"] == "completed"]
+    failed = [t for t in all_tasks if t["status"] == "failed"]
+    running = [t for t in all_tasks if t["status"] == "running"]
+    return {
+        "total_tasks": len(all_tasks),
+        "completed": len(completed),
+        "failed": len(failed),
+        "running": len(running),
+        "success_rate": len(completed) / max(len(all_tasks), 1) * 100,
+        "task_types": {},
+    }
+
+# ─── Async Tasks ──────────────────────────────────────────────────────────────
+@app.post("/tasks")
+async def submit_task(req: AsyncTaskRequest, background_tasks: BackgroundTasks):
+    task = dev.new_task(req.user_id, req.task_type, str(req.payload)[:80])
+    task_id = task["task_id"]
+    dev.update_task(task_id, status="running")
+
+    async def _dispatch():
+        try:
+            if req.task_type == "generate":
+                result = await dev.generate_project(
+                    description=req.payload.get("description", ""),
+                    stack=req.payload.get("stack", "python-fastapi"),
+                    user_id=req.user_id,
+                    task_id=task_id,
+                )
+            elif req.task_type == "agent":
+                result = await ag.run_agent(
+                    task=req.payload.get("task", ""),
+                    user_id=req.user_id,
+                    task_id=task_id,
+                )
+            elif req.task_type == "workflow":
+                result = await dev.run_dev_workflow(
+                    description=req.payload.get("description", ""),
+                    user_id=req.user_id,
+                    task_id=task_id,
+                    **{k: v for k, v in req.payload.items() if k != "description"},
+                )
+            else:
+                result = {"error": f"Unknown task type: {req.task_type}"}
+            dev.update_task(task_id, status="completed", progress=100, result=result)
+        except Exception as e:
+            dev.update_task(task_id, status="failed", error=str(e))
+
+    background_tasks.add_task(_dispatch)
+    return {"task_id": task_id, "status": "started"}
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str):
+    task = dev.get_task(task_id)
+    if not task:
+        raise HTTPException(404, f"Task {task_id} not found")
+    return task
+
+@app.get("/tasks/{task_id}/result")
+async def get_task_result(task_id: str):
+    task = dev.get_task(task_id)
+    if not task:
+        raise HTTPException(404, f"Task {task_id} not found")
+    if task["status"] not in ("completed", "failed"):
+        return {"status": task["status"], "progress": task["progress"], "logs": task["logs"]}
+    return {"status": task["status"], "result": task["result"], "error": task.get("error")}
+
+@app.get("/tasks")
+async def list_tasks(user_id: str = "anonymous"):
+    return {"tasks": dev.list_tasks(user_id)}
+
+# ─── Workspace ────────────────────────────────────────────────────────────────
+@app.post("/workspace/files")
+async def workspace_create(req: WorkspaceFileRequest):
+    result = ag.workspace_create(req.user_id, req.filename, req.content)
+    return result
+
+@app.get("/workspace/files")
+async def workspace_list(user_id: str = "anonymous"):
+    return {"files": ag.workspace_list(user_id)}
+
+@app.get("/workspace/files/{filename:path}")
+async def workspace_read(filename: str, user_id: str = "anonymous"):
+    content = ag.workspace_read(user_id, filename)
+    if content is None:
+        raise HTTPException(404, f"File {filename} not found")
+    return {"filename": filename, "content": content}
+
+@app.delete("/workspace/files/{filename:path}")
+async def workspace_delete(filename: str, user_id: str = "anonymous"):
+    deleted = ag.workspace_delete(user_id, filename)
+    return {"deleted": deleted, "filename": filename}
+
+# ─── Debug ───────────────────────────────────────────────────────────────────
 @app.get("/debug/env")
 async def debug_env():
-    """Show sanitized env vars for debugging."""
-    import os
-    def mask(v): return f"***{v[-4:]}" if v and len(v) > 4 else ("set" if v else "not_set")
+    """Check which env vars are set (values masked)."""
+    keys_to_check = [
+        "GEMINI_KEY", "GITHUB_TOKEN", "SAMBANOVA_KEY",
+        "DATABASE_URL", "REDIS_URL", "E2B_API_KEY",
+        "HF_TOKEN", "VERCEL_TOKEN"
+    ]
     return {
-        "DATABASE_URL": mask(os.environ.get("DATABASE_URL", "")),
-        "REDIS_URL": mask(os.environ.get("REDIS_URL", "")),
-        "E2B_API_KEY": mask(os.environ.get("E2B_API_KEY", "")),
-        "GEMINI_KEYS": f"{len(os.environ.get('GEMINI_KEYS','').split(','))} keys" if os.environ.get("GEMINI_KEYS") else "not_set",
-        "SAMBANOVA_KEYS": f"{len(os.environ.get('SAMBANOVA_KEYS','').split(','))} keys" if os.environ.get("SAMBANOVA_KEYS") else "not_set",
-        "GITHUB_KEYS": f"{len(os.environ.get('GITHUB_KEYS','').split(','))} keys" if os.environ.get("GITHUB_KEYS") else "not_set",
-        "GITHUB_TOKEN": mask(os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_PAT", "")),
-        "VERCEL_TOKEN": mask(os.environ.get("VERCEL_TOKEN", "")),
-        "HF_TOKEN": mask(os.environ.get("HF_TOKEN", "")),
+        k: "✅ set" if os.environ.get(k) else "❌ not set"
+        for k in keys_to_check
     }
 
 
-# ─── Phase 9: Register LLM + E2B callbacks ───────────────────────────────────
+# ─── Phase 9 + 10: Register LLM + E2B callbacks ─────────────────────────────
 # Done after all functions are defined so they're available for injection
 
 phase9.register_llm_fn(_llm_call)

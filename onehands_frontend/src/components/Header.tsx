@@ -16,62 +16,58 @@ const TABS: { id: ActiveTab; label: string; icon: React.FC<any>; description: st
 ]
 
 export default function Header() {
-  const { activeTab, setActiveTab, setSidebarOpen, sidebarOpen } = useStore()
+  const { activeTab, setActiveTab, sidebarOpen, setSidebarOpen } = useStore()
 
   return (
-    <header className="flex-shrink-0 bg-dark-900 border-b border-dark-800 px-4 py-3">
-      <div className="flex items-center gap-4">
-        {/* Toggle sidebar */}
-        <button
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="p-1.5 rounded-lg hover:bg-dark-800 transition-colors text-dark-400 hover:text-white"
-          title="Toggle sidebar"
-        >
-          <Menu size={18} />
-        </button>
+    <header className="flex items-center gap-1 px-3 py-2 border-b border-dark-800 bg-dark-900 overflow-x-auto flex-shrink-0">
+      <button
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="p-2 rounded-lg text-dark-400 hover:text-white hover:bg-dark-800 transition-colors flex-shrink-0"
+      >
+        <Menu size={16} />
+      </button>
 
-        {/* Logo */}
-        <div className="flex items-center gap-2 mr-2">
-          <div className="w-7 h-7 bg-brand-600 rounded-lg flex items-center justify-center">
-            <Zap size={14} className="text-white" />
-          </div>
-          <span className="font-bold text-white hidden sm:block">Onehands AI</span>
-          <span className="text-xs text-dark-400 hidden md:block">v10.0</span>
+      {/* Logo */}
+      <div className="flex items-center gap-2 mr-2">
+        <div className="w-7 h-7 bg-brand-600 rounded-lg flex items-center justify-center">
+          <Zap size={14} className="text-white" />
         </div>
-
-        {/* Navigation tabs */}
-        <nav className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
-          {TABS.map(tab => {
-            const Icon = tab.icon
-            const isActive = activeTab === tab.id
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                title={tab.description}
-                className={`
-                  flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
-                  transition-all duration-150 whitespace-nowrap relative
-                  ${isActive
-                    ? tab.highlight
-                      ? 'bg-gradient-to-r from-primary-600 to-purple-600 text-white'
-                      : 'bg-brand-600 text-white'
-                    : tab.highlight
-                      ? 'text-purple-400 hover:text-white hover:bg-purple-900/50'
-                      : 'text-dark-400 hover:text-white hover:bg-dark-800'
-                  }
-                `}
-              >
-                <Icon size={14} />
-                <span className="hidden sm:block">{tab.label}</span>
-                {tab.highlight && !isActive && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-purple-400 rounded-full animate-pulse" />
-                )}
-              </button>
-            )
-          })}
-        </nav>
+        <span className="font-bold text-white hidden sm:block">Onehands AI</span>
+        <span className="text-xs text-dark-400 hidden md:block">v10.0</span>
       </div>
+
+      {/* Navigation tabs */}
+      <nav className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+        {TABS.map(tab => {
+          const Icon = tab.icon
+          const isActive = activeTab === tab.id
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              title={tab.description}
+              className={`
+                flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+                transition-all duration-150 whitespace-nowrap relative
+                ${isActive
+                  ? tab.highlight
+                    ? 'bg-gradient-to-r from-primary-600 to-purple-600 text-white'
+                    : 'bg-brand-600 text-white'
+                  : tab.highlight
+                    ? 'text-purple-400 hover:text-white hover:bg-purple-900/50'
+                    : 'text-dark-400 hover:text-white hover:bg-dark-800'
+                }
+              `}
+            >
+              <Icon size={14} />
+              <span className="hidden sm:block">{tab.label}</span>
+              {tab.highlight && !isActive && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-purple-400 rounded-full animate-pulse" />
+              )}
+            </button>
+          )
+        })}
+      </nav>
     </header>
   )
 }
